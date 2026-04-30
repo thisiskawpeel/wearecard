@@ -1,1511 +1,1157 @@
 """
 WeAreCars - Car Rental Management System
-=========================================
-A standalone Windows Forms-style application built with Python Tkinter.
-Designed for WeAreCars staff to manage vehicle rental bookings.
-
-Author  : Graduate Software Developer
-Version : 1.0.0
+A production-quality Tkinter desktop application for managing car rentals.
+Fixed eye button + added right-side dashboard panel.
 """
 
 import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import os
-import re
 from datetime import datetime
+from typing import Optional
 
+# ─────────────────────────── CONSTANTS ───────────────────────────────────────
+APP_TITLE = "WeAreCars"
+DATA_FILE = "wearecars_bookings.json"
+CREDENTIALS = {"username": "sta001", "password": "givemethekeys123"}
+BASE_RATE_PER_DAY = 25
+CAR_TYPE_SURCHARGE = {
+    "City Car": 0,
+    "Family Car": 50,
+    "Sports Car": 75,
+    "SUV": 65,
+}
+FUEL_TYPE_SURCHARGE = {
+    "Petrol": 0,
+    "Diesel": 0,
+    "Hybrid": 30,
+    "Electric": 50,
+}
+UNLIMITED_MILEAGE_PER_DAY = 10
+BREAKDOWN_COVER_PER_DAY = 2
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  GLOBAL DATA STORE  (in-memory booking list, persisted to JSON)
-# ─────────────────────────────────────────────────────────────────────────────
-BOOKINGS_FILE = "wearecars_bookings.json"  # local JSON persistence file
-
-# Load existing bookings from file on startup
-def load_bookings():
-    """Load bookings list from JSON file, or return empty list."""
-    if os.path.exists(BOOKINGS_FILE):
-        with open(BOOKINGS_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-def save_bookings(bookings):
-    """Persist bookings list to JSON file."""
-    with open(BOOKINGS_FILE, "w") as f:
-        json.dump(bookings, f, indent=2)
-
-bookings = load_bookings()   # global booking list shared across frames
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  PRICING CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
-BASE_RATE       = 25    # £ per day (base rate)
-CAR_PRICES      = {"City Car": 0, "Family Car": 50, "Sports Car": 75, "SUV": 65}
-FUEL_PRICES     = {"Petrol": 0, "Diesel": 0, "Hybrid": 30, "Full Electric": 50}
-MILEAGE_RATE    = 10    # £ per day extra
-BREAKDOWN_RATE  = 2     # £ per day extra
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  COLOUR PALETTE  (professional dark-blue automotive theme)
-# ─────────────────────────────────────────────────────────────────────────────
+# Colour palette
 C = {
-    "bg_dark":   "#0D1B2A",   # deep navy
-    "bg_mid":    "#1B2A3B",   # panel background
-    "bg_card":   "#243447",   # card / entry background
-    "accent":    "#E8A838",   # amber accent (car badge feel)
-    "accent2":   "#4FC3F7",   # light-blue highlight
-    "text_main": "#F0F4F8",   # primary text
-    "text_dim":  "#8FA3B1",   # secondary / hint text
-    "danger":    "#E53935",   # error / delete
-    "success":   "#43A047",   # confirm / save
-    "white":     "#FFFFFF",
-    "entry_bg":  "#1A2B3C",
-    "border":    "#2E4057",
+    "bg_dark": "#0D1117",
+    "bg_card": "#161B22",
+    "bg_input": "#1C2128",
+    "accent": "#E8B84B",
+    "accent_hover": "#F5D06A",
+    "accent_dark": "#C49A2E",
+    "text_primary": "#F0F6FC",
+    "text_secondary": "#8B949E",
+    "text_muted": "#484F58",
+    "danger": "#F85149",
+    "success": "#3FB950",
+    "border": "#30363D",
+    "highlight": "#1F2937",
+    "row_alt": "#1A1F26",
 }
 
-FONT_TITLE   = ("Segoe UI", 22, "bold")
-FONT_HEAD    = ("Segoe UI", 13, "bold")
-FONT_SUBHEAD = ("Segoe UI", 11, "bold")
-FONT_BODY    = ("Segoe UI", 10)
-FONT_SMALL   = ("Segoe UI", 9)
-FONT_MONO    = ("Courier New", 10)
+FONT_TITLE = ("Georgia", 28, "bold")
+FONT_HEADING = ("Georgia", 16, "bold")
+FONT_SUBHEAD = ("Helvetica", 12, "bold")
+FONT_BODY = ("Helvetica", 11)
+FONT_SMALL = ("Helvetica", 9)
+FONT_MONO = ("Courier", 10)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  HELPER – styled widget factories
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────── DATA LAYER ──────────────────────────────────────
+class BookingStore:
+    """Handles JSON persistence for all bookings."""
 
-def make_frame(parent, **kw):
-    """Return a dark-themed Frame."""
-    return tk.Frame(parent, bg=C["bg_mid"], **kw)
+    def __init__(self, filepath: str = DATA_FILE):
+        self.filepath = filepath
+        self.bookings: list = []
+        self._next_id = 1
+        self.load()
 
-def make_label(parent, text, font=FONT_BODY, fg=None, **kw):
-    """Return a styled Label."""
-    return tk.Label(parent, text=text, font=font,
-                    fg=fg or C["text_main"], bg=C["bg_mid"], **kw)
+    def load(self):
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, "r") as f:
+                    data = json.load(f)
+                self.bookings = data.get("bookings", [])
+                self._next_id = data.get("next_id", 1)
+            except (json.JSONDecodeError, KeyError):
+                self.bookings = []
+                self._next_id = 1
+        else:
+            self.bookings = []
+            self._next_id = 1
 
-def make_entry(parent, textvariable=None, width=28, show="", **kw):
-    """Return a styled Entry widget."""
-    return tk.Entry(parent, textvariable=textvariable, width=width, show=show,
-                    bg=C["entry_bg"], fg=C["text_main"], insertbackground=C["accent"],
-                    relief="flat", font=FONT_BODY,
-                    highlightthickness=1, highlightbackground=C["border"],
-                    highlightcolor=C["accent"], **kw)
+    def save(self):
+        with open(self.filepath, "w") as f:
+            json.dump({"bookings": self.bookings, "next_id": self._next_id}, f, indent=2)
 
-def make_button(parent, text, command, bg=None, fg=None, width=18, **kw):
-    """Return a flat styled Button."""
-    return tk.Button(parent, text=text, command=command,
-                     bg=bg or C["accent"], fg=fg or C["bg_dark"],
-                     font=FONT_SUBHEAD, relief="flat",
-                     activebackground=C["accent2"], activeforeground=C["bg_dark"],
-                     cursor="hand2", width=width, pady=6, **kw)
+    def add(self, booking: dict) -> dict:
+        booking["id"] = self._next_id
+        booking["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self.bookings.append(booking)
+        self._next_id += 1
+        self.save()
+        return booking
 
-def make_separator(parent, pady=8):
-    """Return a thin separator line."""
-    sep = tk.Frame(parent, height=1, bg=C["border"])
-    sep.pack(fill="x", pady=pady)
-    return sep
+    def update(self, booking_id: int, updates: dict) -> bool:
+        for i, b in enumerate(self.bookings):
+            if b["id"] == booking_id:
+                self.bookings[i].update(updates)
+                self.bookings[i]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                self.save()
+                return True
+        return False
+
+    def delete(self, booking_id: int) -> bool:
+        original = len(self.bookings)
+        self.bookings = [b for b in self.bookings if b["id"] != booking_id]
+        if len(self.bookings) < original:
+            self.save()
+            return True
+        return False
+
+    def get_by_id(self, booking_id: int) -> Optional[dict]:
+        for b in self.bookings:
+            if b["id"] == booking_id:
+                return b
+        return None
+
+    def total_revenue(self) -> float:
+        return sum(b.get("total_cost", 0) for b in self.bookings)
+
+    def most_popular_car_type(self) -> str:
+        if not self.bookings:
+            return "N/A"
+        counts: dict = {}
+        for b in self.bookings:
+            ct = b.get("car_type", "Unknown")
+            counts[ct] = counts.get(ct, 0) + 1
+        return max(counts, key=counts.get)
+
+    def most_popular_fuel_type(self) -> str:
+        if not self.bookings:
+            return "N/A"
+        counts: dict = {}
+        for b in self.bookings:
+            ft = b.get("fuel_type", "Unknown")
+            counts[ft] = counts.get(ft, 0) + 1
+        return max(counts, key=counts.get)
+
+    def average_booking_value(self) -> float:
+        if not self.bookings:
+            return 0.0
+        return self.total_revenue() / len(self.bookings)
+
+    def car_type_counts(self) -> dict:
+        counts = {}
+        for b in self.bookings:
+            ct = b.get("car_type", "Unknown")
+            counts[ct] = counts.get(ct, 0) + 1
+        return counts
+
+    def fuel_type_counts(self) -> dict:
+        counts = {}
+        for b in self.bookings:
+            ft = b.get("fuel_type", "Unknown")
+            counts[ft] = counts.get(ft, 0) + 1
+        return counts
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SPLASH SCREEN  (shown for 3 seconds before login)
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────── PRICE CALCULATOR ────────────────────────────────────
+def calculate_price(days: int, car_type: str, fuel_type: str,
+                    unlimited_mileage: bool, breakdown_cover: bool) -> dict:
+    """Return a full price breakdown dict."""
+    base = days * BASE_RATE_PER_DAY
+    car_surcharge = CAR_TYPE_SURCHARGE.get(car_type, 0)
+    fuel_surcharge = FUEL_TYPE_SURCHARGE.get(fuel_type, 0)
+    mileage_cost = days * UNLIMITED_MILEAGE_PER_DAY if unlimited_mileage else 0
+    breakdown_cost = days * BREAKDOWN_COVER_PER_DAY if breakdown_cover else 0
+    total = base + car_surcharge + fuel_surcharge + mileage_cost + breakdown_cost
+    return {
+        "base": base,
+        "car_surcharge": car_surcharge,
+        "fuel_surcharge": fuel_surcharge,
+        "mileage_cost": mileage_cost,
+        "breakdown_cost": breakdown_cost,
+        "total": total,
+    }
 
+
+# ─────────────────────── VALIDATION ──────────────────────────────────────────
+def validate_booking_fields(fields: dict) -> list:
+    errors = []
+    if not fields.get("first_name", "").strip():
+        errors.append("First Name is required.")
+    if not fields.get("surname", "").strip():
+        errors.append("Surname is required.")
+    if not fields.get("address", "").strip():
+        errors.append("Address is required.")
+    try:
+        age = int(fields.get("age", 0))
+        if age < 18:
+            errors.append("Customer must be 18 or older.")
+    except (ValueError, TypeError):
+        errors.append("Age must be a valid number.")
+    if fields.get("driving_license") != "Yes":
+        errors.append("A valid driving licence is required to make a booking.")
+    try:
+        days = int(fields.get("days", 0))
+        if not (1 <= days <= 28):
+            errors.append("Number of days must be between 1 and 28.")
+    except (ValueError, TypeError):
+        errors.append("Number of days must be a valid number.")
+    if fields.get("car_type") not in CAR_TYPE_SURCHARGE:
+        errors.append("Please select a valid car type.")
+    if fields.get("fuel_type") not in FUEL_TYPE_SURCHARGE:
+        errors.append("Please select a valid fuel type.")
+    return errors
+
+
+# ─────────────────────── STYLE SETUP ─────────────────────────────────────────
+def apply_dark_theme(root: tk.Tk):
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure("TFrame", background=C["bg_dark"])
+    style.configure("Card.TFrame", background=C["bg_card"])
+    style.configure("TLabel", background=C["bg_dark"], foreground=C["text_primary"], font=FONT_BODY)
+    style.configure("Card.TLabel", background=C["bg_card"], foreground=C["text_primary"], font=FONT_BODY)
+    style.configure("Muted.TLabel", background=C["bg_dark"], foreground=C["text_secondary"], font=FONT_SMALL)
+    style.configure("CardMuted.TLabel", background=C["bg_card"], foreground=C["text_secondary"], font=FONT_SMALL)
+    style.configure("Accent.TLabel", background=C["bg_dark"], foreground=C["accent"], font=FONT_SUBHEAD)
+    style.configure("CardAccent.TLabel", background=C["bg_card"], foreground=C["accent"], font=FONT_SUBHEAD)
+    style.configure("Success.TLabel", background=C["bg_card"], foreground=C["success"], font=FONT_BODY)
+    style.configure("Danger.TLabel", background=C["bg_card"], foreground=C["danger"], font=FONT_BODY)
+    style.configure("Accent.TButton", background=C["accent"], foreground=C["bg_dark"],
+                    font=FONT_SUBHEAD, relief="flat", padding=(14, 8))
+    style.map("Accent.TButton",
+              background=[("active", C["accent_hover"]), ("pressed", C["accent_dark"])])
+    style.configure("Ghost.TButton", background=C["bg_card"], foreground=C["text_primary"],
+                    font=FONT_BODY, relief="flat", padding=(12, 7))
+    style.map("Ghost.TButton",
+              background=[("active", C["highlight"])],
+              foreground=[("active", C["accent"])])
+    style.configure("Danger.TButton", background=C["danger"], foreground=C["text_primary"],
+                    font=FONT_BODY, relief="flat", padding=(12, 7))
+    style.map("Danger.TButton", background=[("active", "#FF6B6B")])
+    style.configure("TEntry", fieldbackground=C["bg_input"], foreground=C["text_primary"],
+                    insertcolor=C["accent"], bordercolor=C["border"], lightcolor=C["border"],
+                    darkcolor=C["border"], font=FONT_BODY, padding=6)
+    style.map("TEntry", bordercolor=[("focus", C["accent"])])
+    style.configure("TCombobox", fieldbackground=C["bg_input"], foreground=C["text_primary"],
+                    background=C["bg_input"], selectbackground=C["accent"],
+                    selectforeground=C["bg_dark"], arrowcolor=C["accent"], font=FONT_BODY, padding=6)
+    style.map("TCombobox", fieldbackground=[("readonly", C["bg_input"])])
+    style.configure("TCheckbutton", background=C["bg_card"], foreground=C["text_primary"], font=FONT_BODY)
+    style.map("TCheckbutton", background=[("active", C["bg_card"])])
+    style.configure("Treeview", background=C["bg_card"], foreground=C["text_primary"],
+                    fieldbackground=C["bg_card"], rowheight=30, font=FONT_BODY, borderwidth=0)
+    style.configure("Treeview.Heading", background=C["bg_dark"], foreground=C["accent"],
+                    font=FONT_SUBHEAD, relief="flat")
+    style.map("Treeview",
+              background=[("selected", C["accent"])],
+              foreground=[("selected", C["bg_dark"])])
+    style.configure("TScrollbar", background=C["bg_card"], troughcolor=C["bg_dark"],
+                    arrowcolor=C["text_muted"], borderwidth=0)
+
+
+# ─────────────────────── REUSABLE WIDGETS ────────────────────────────────────
+class Separator(tk.Frame):
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, height=1, bg=C["border"], **kwargs)
+
+
+class StatCard(tk.Frame):
+    """Metric card for the dashboard."""
+    def __init__(self, parent, icon: str, title: str, value: str, sub: str = ""):
+        super().__init__(parent, bg=C["bg_card"], highlightthickness=1, highlightbackground=C["border"])
+        inner = tk.Frame(self, bg=C["bg_card"], padx=20, pady=16)
+        inner.pack(fill="both", expand=True)
+        tk.Label(inner, text=icon + " " + title, font=FONT_SMALL,
+                 bg=C["bg_card"], fg=C["text_secondary"]).pack(anchor="w")
+        self.val_lbl = tk.Label(inner, text=value, font=("Georgia", 22, "bold"),
+                                bg=C["bg_card"], fg=C["accent"])
+        self.val_lbl.pack(anchor="w", pady=(6, 0))
+        if sub:
+            tk.Label(inner, text=sub, font=FONT_SMALL, bg=C["bg_card"],
+                     fg=C["text_muted"]).pack(anchor="w", pady=(3, 0))
+
+    def update_value(self, value: str):
+        self.val_lbl.config(text=value)
+
+
+# ─────────────────────── SPLASH SCREEN ───────────────────────────────────────
 class SplashScreen(tk.Toplevel):
-    """
-    Splash screen displayed for 3 seconds when the application launches.
-    Shows the WeAreCars brand, a welcome message, and loading progress bar.
-    """
-
-    def __init__(self, root, on_done):
-        super().__init__(root)
-        self.on_done = on_done
-
-        # Window configuration – no title bar, centred
-        self.overrideredirect(True)   # remove title bar / border
+    """3-second splash with progress bar."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.overrideredirect(True)
         self.configure(bg=C["bg_dark"])
-
-        # Centre the splash (600 × 380) on screen
-        w, h = 600, 380
+        w, h = 500, 320
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        x  = (sw - w) // 2
-        y  = (sh - h) // 2
-        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        outer = tk.Frame(self, bg=C["accent"], padx=2, pady=2)
+        outer.place(relx=0, rely=0, relwidth=1, relheight=1)
+        inner = tk.Frame(outer, bg=C["bg_card"])
+        inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+        tk.Frame(inner, bg=C["accent"], height=5).pack(fill="x")
+        content = tk.Frame(inner, bg=C["bg_card"])
+        content.pack(expand=True)
+        tk.Label(content, text="🚗", font=("Helvetica", 48), bg=C["bg_card"],
+                 fg=C["accent"]).pack(pady=(0, 10))
+        tk.Label(content, text=APP_TITLE, font=("Georgia", 34, "bold"),
+                 bg=C["bg_card"], fg=C["text_primary"]).pack()
+        tk.Label(content, text="Car Rental Management System", font=("Helvetica", 12),
+                 bg=C["bg_card"], fg=C["text_secondary"]).pack(pady=(4, 4))
+        tk.Label(content, text="Loading — please wait…", font=FONT_SMALL,
+                 bg=C["bg_card"], fg=C["text_muted"]).pack(pady=(14, 0))
+        self._pval = 0
+        self.bar = ttk.Progressbar(content, length=320, mode="determinate", maximum=100)
+        self.bar.pack(pady=(8, 0))
+        self._tick()
 
-        self._build_ui()
-        self._animate_progress(0)   # start progress bar animation
-
-    def _build_ui(self):
-        """Construct all splash UI elements."""
-
-        # Top decorative stripe
-        stripe = tk.Frame(self, bg=C["accent"], height=6)
-        stripe.pack(fill="x")
-
-        # Main content area
-        body = tk.Frame(self, bg=C["bg_dark"])
-        body.pack(expand=True, fill="both", padx=40, pady=30)
-
-        # Car emoji icon (large display)
-        tk.Label(body, text="🚗", font=("Segoe UI Emoji", 54),
-                 bg=C["bg_dark"]).pack(pady=(10, 0))
-
-        # Brand name
-        tk.Label(body, text="WeAreCars",
-                 font=("Segoe UI", 32, "bold"),
-                 fg=C["accent"], bg=C["bg_dark"]).pack()
-
-        # Tagline
-        tk.Label(body, text="Car Rental Management System",
-                 font=("Segoe UI", 12), fg=C["text_dim"],
-                 bg=C["bg_dark"]).pack(pady=(2, 16))
-
-        make_separator(body, pady=4)
-
-        # Welcome + instructions panel
-        instructions = (
-            "Welcome, WeAreCars Staff Member!\n\n"
-            "• Login using your staff credentials\n"
-            "• Manage bookings from the dashboard\n"
-            "• Add, view, update or delete rental records"
-        )
-        tk.Label(body, text=instructions, font=FONT_BODY,
-                 fg=C["text_main"], bg=C["bg_dark"],
-                 justify="left", wraplength=480).pack(pady=6)
-
-        # Progress bar container
-        bar_frame = tk.Frame(body, bg=C["bg_dark"])
-        bar_frame.pack(fill="x", pady=(18, 4))
-
-        self.progress_var = tk.IntVar(value=0)
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure("Splash.Horizontal.TProgressbar",
-                        troughcolor=C["bg_mid"],
-                        background=C["accent"],
-                        thickness=8)
-
-        self.progress = ttk.Progressbar(bar_frame,
-                                        variable=self.progress_var,
-                                        maximum=100,
-                                        style="Splash.Horizontal.TProgressbar")
-        self.progress.pack(fill="x")
-
-        # Loading label
-        self.loading_lbl = tk.Label(body, text="Loading…",
-                                    font=FONT_SMALL, fg=C["text_dim"],
-                                    bg=C["bg_dark"])
-        self.loading_lbl.pack()
-
-        # Bottom stripe
-        tk.Frame(self, bg=C["accent"], height=6).pack(fill="x", side="bottom")
-
-    def _animate_progress(self, step):
-        """
-        Recursively increment progress bar over 3 seconds (300 steps × 10 ms).
-        Calls on_done callback when complete.
-        """
-        if step <= 100:
-            self.progress_var.set(step)
-            msgs = {0: "Loading…", 30: "Initialising database…",
-                    60: "Preparing dashboard…", 90: "Almost ready…", 100: "Done!"}
-            if step in msgs:
-                self.loading_lbl.config(text=msgs[step])
-            # 3000 ms / 100 steps = 30 ms per step
-            self.after(30, self._animate_progress, step + 1)
-        else:
-            self.after(100, self._finish)   # brief pause then close
-
-    def _finish(self):
-        """Destroy splash and invoke the callback to show login."""
-        self.destroy()
-        self.on_done()
+    def _tick(self):
+        if self._pval < 100:
+            self._pval += 2
+            self.bar["value"] = self._pval
+            self.after(55, self._tick)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  LOGIN FRAME
-# ─────────────────────────────────────────────────────────────────────────────
-
-class LoginFrame(tk.Frame):
-    """
-    Staff login page.
-    Fixed credentials: sta001 / givemethekeys123
-    Includes show/hide password toggle.
-    """
-
-    # Fixed staff credentials (in production these would be hashed)
-    VALID_USER = "sta001"
-    VALID_PASS = "givemethekeys123"
-
-    def __init__(self, parent, on_login_success):
+# ─────────────────────── LOGIN SCREEN ────────────────────────────────────────
+class LoginScreen(tk.Frame):
+    """Username / password login panel with fixed eye button."""
+    def __init__(self, parent, on_success):
         super().__init__(parent, bg=C["bg_dark"])
-        self.on_login_success = on_login_success
-        self._build_ui()
+        self.on_success = on_success
+        self._build()
 
-    def _build_ui(self):
-        """Build login card centred on screen."""
+    def _build(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        card = tk.Frame(self, bg=C["bg_card"], highlightthickness=1, highlightbackground=C["border"])
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        inner = tk.Frame(card, bg=C["bg_card"], padx=48, pady=40)
+        inner.pack()
+        tk.Frame(inner, bg=C["accent"], height=4).pack(fill="x", pady=(0, 28))
+        tk.Label(inner, text="🚗 " + APP_TITLE, font=("Georgia", 26, "bold"),
+                 bg=C["bg_card"], fg=C["text_primary"]).pack()
+        tk.Label(inner, text="Staff Portal Login", font=("Helvetica", 11),
+                 bg=C["bg_card"], fg=C["text_secondary"]).pack(pady=(4, 28))
 
-        # Outer padding frame
-        outer = tk.Frame(self, bg=C["bg_dark"])
-        outer.place(relx=0.5, rely=0.5, anchor="center")
+        # Username
+        tk.Label(inner, text="Username", font=FONT_SMALL, bg=C["bg_card"],
+                 fg=C["text_secondary"]).pack(anchor="w")
+        self.uvar = tk.StringVar()
+        self.u_entry = ttk.Entry(inner, textvariable=self.uvar, font=FONT_BODY, width=34)
+        self.u_entry.pack(fill="x", pady=(2, 16))
 
-        # Card background
-        card = tk.Frame(outer, bg=C["bg_mid"], padx=40, pady=40)
-        card.pack()
+        # Password row with eye button and checkbox
+        tk.Label(inner, text="Password", font=FONT_SMALL, bg=C["bg_card"],
+                 fg=C["text_secondary"]).pack(anchor="w")
+        self.pvar = tk.StringVar()
+        pw_row = tk.Frame(inner, bg=C["bg_card"])
+        pw_row.pack(fill="x", pady=(2, 6))
+        self.p_entry = ttk.Entry(pw_row, textvariable=self.pvar, show="•", font=FONT_BODY)
+        self.p_entry.pack(side="left", fill="x", expand=True)
 
-        # Logo / branding
-        tk.Label(card, text="🚗  WeAreCars",
-                 font=("Segoe UI", 20, "bold"),
-                 fg=C["accent"], bg=C["bg_mid"]).pack(pady=(0, 4))
-
-        tk.Label(card, text="Staff Login Portal",
-                 font=FONT_BODY, fg=C["text_dim"],
-                 bg=C["bg_mid"]).pack(pady=(0, 24))
-
-        # ── Username row ──────────────────────────────────────────────────
-        tk.Label(card, text="Username", font=FONT_SUBHEAD,
-                 fg=C["text_main"], bg=C["bg_mid"],
-                 anchor="w").pack(fill="x")
-
-        self.username_var = tk.StringVar()
-        user_entry = make_entry(card, textvariable=self.username_var, width=30)
-        user_entry.pack(pady=(4, 14))
-        user_entry.bind("<Return>", lambda e: self.pass_entry.focus())
-        user_entry.focus()   # auto-focus username field on load
-
-        # ── Password row ──────────────────────────────────────────────────
-        tk.Label(card, text="Password", font=FONT_SUBHEAD,
-                 fg=C["text_main"], bg=C["bg_mid"],
-                 anchor="w").pack(fill="x")
-
-        pass_row = tk.Frame(card, bg=C["bg_mid"])
-        pass_row.pack(pady=(4, 6))
-
-        self.password_var = tk.StringVar()
-        self.pass_entry = make_entry(pass_row, textvariable=self.password_var,
-                                     width=25, show="•")
-        self.pass_entry.pack(side="left")
-        self.pass_entry.bind("<Return>", lambda e: self._attempt_login())
-
-        # Show / Hide password toggle button
-        self.show_pass = tk.BooleanVar(value=False)
+        # Eye button toggles visibility and updates checkbox
+        self.show_var = tk.BooleanVar(value=False)
         self.eye_btn = tk.Button(
-            pass_row, text="👁", font=("Segoe UI Emoji", 12),
-            bg=C["entry_bg"], fg=C["text_dim"], relief="flat",
-            bd=0, cursor="hand2", activebackground=C["bg_card"],
-            command=self._toggle_password
+            pw_row, text="👁", font=FONT_SMALL, bg=C["bg_input"], fg=C["text_secondary"],
+            relief="flat", cursor="hand2", command=self._toggle_password
         )
         self.eye_btn.pack(side="left", padx=(4, 0))
 
-        # Tooltip hint for show password button
-        self._add_tooltip(self.eye_btn, "Show / Hide Password")
+        # Checkbox also toggles
+        cb_row = tk.Frame(inner, bg=C["bg_card"])
+        cb_row.pack(anchor="w", pady=(4, 20))
+        self.show_cb = ttk.Checkbutton(
+            cb_row, text=" Show password", variable=self.show_var,
+            command=self._toggle_password, style="TCheckbutton"
+        )
+        self.show_cb.pack(side="left")
 
-        # ── Error message label (hidden until needed) ─────────────────────
-        self.err_lbl = tk.Label(card, text="", font=FONT_SMALL,
-                                fg=C["danger"], bg=C["bg_mid"])
-        self.err_lbl.pack(pady=(2, 10))
-
-        # ── Login button ──────────────────────────────────────────────────
-        make_button(card, "🔑  Login", self._attempt_login,
-                    bg=C["accent"], width=30).pack(pady=(8, 0))
-
-        # Hint for demo
-        tk.Label(card, text="Hint: sta001 / givemethekeys123",
-                 font=FONT_SMALL, fg=C["text_dim"],
-                 bg=C["bg_mid"]).pack(pady=(10, 0))
+        self.err_var = tk.StringVar()
+        tk.Label(inner, textvariable=self.err_var, font=FONT_SMALL, bg=C["bg_card"],
+                 fg=C["danger"], wraplength=300).pack(pady=(0, 10))
+        tk.Button(inner, text=" Sign In ", font=FONT_SUBHEAD, bg=C["accent"], fg=C["bg_dark"],
+                  activebackground=C["accent_hover"], activeforeground=C["bg_dark"],
+                  relief="flat", cursor="hand2", pady=10, command=self._login).pack(fill="x")
+        self.u_entry.focus()
+        self.u_entry.bind("<Return>", lambda _: self.p_entry.focus())
+        self.p_entry.bind("<Return>", lambda _: self._login())
 
     def _toggle_password(self):
-        """Toggle the password field between hidden (•) and visible text."""
-        self.show_pass.set(not self.show_pass.get())
-        # Update show character; empty string means visible
-        self.pass_entry.config(show="" if self.show_pass.get() else "•")
-        self.eye_btn.config(
-            fg=C["accent"] if self.show_pass.get() else C["text_dim"]
-        )
-
-    def _attempt_login(self):
-        """Validate credentials and proceed to dashboard or show error."""
-        username = self.username_var.get().strip()
-        password = self.password_var.get().strip()
-
-        # Input presence check
-        if not username or not password:
-            self.err_lbl.config(text="⚠  Please enter both username and password.")
-            return
-
-        # Credential validation
-        if username == self.VALID_USER and password == self.VALID_PASS:
-            self.err_lbl.config(text="")
-            self.on_login_success()          # proceed to dashboard
+        """Toggle visibility and keep both eye button and checkbox in sync."""
+        if self.show_var.get():
+            self.p_entry.config(show="")
+            self.eye_btn.config(text="🙈")
         else:
-            self.err_lbl.config(text="✖  Incorrect username or password.")
-            self.password_var.set("")        # clear password field on failure
-            self.pass_entry.focus()
+            self.p_entry.config(show="•")
+            self.eye_btn.config(text="👁")
 
-    def _add_tooltip(self, widget, text):
-        """Attach a simple hover tooltip to a widget."""
-        tip = None
-
-        def show(event):
-            nonlocal tip
-            tip = tk.Toplevel(widget)
-            tip.overrideredirect(True)
-            tip.configure(bg=C["bg_card"])
-            tk.Label(tip, text=text, font=FONT_SMALL,
-                     bg=C["bg_card"], fg=C["text_main"],
-                     padx=6, pady=3).pack()
-            x = widget.winfo_rootx() + 25
-            y = widget.winfo_rooty() + 20
-            tip.geometry(f"+{x}+{y}")
-
-        def hide(event):
-            nonlocal tip
-            if tip:
-                tip.destroy()
-                tip = None
-
-        widget.bind("<Enter>", show)
-        widget.bind("<Leave>", hide)
+    def _login(self):
+        u = self.uvar.get().strip()
+        p = self.pvar.get()
+        if u == CREDENTIALS["username"] and p == CREDENTIALS["password"]:
+            self.err_var.set("")
+            self.on_success()
+        else:
+            self.err_var.set("❌ Incorrect username or password. Please try again.")
+            self.pvar.set("")
+            self.p_entry.focus()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DASHBOARD FRAME
-# ─────────────────────────────────────────────────────────────────────────────
-
-class DashboardFrame(tk.Frame):
-    """
-    Main dashboard shown after login.
-    Displays:
-      - Summary stats (total bookings, total revenue)
-      - Analytics bar chart (car type breakdown)
-      - Quick-action buttons (Add / View / Logout)
-    """
-
-    def __init__(self, parent, controller):
+# ─────────────────────── DASHBOARD (with right sidebar) ──────────────────────
+class Dashboard(tk.Frame):
+    """Main dashboard with analytics cards, action buttons, recent bookings,
+    and a right sidebar showing popular car types & fuel distribution."""
+    def __init__(self, parent, store: BookingStore, nav):
         super().__init__(parent, bg=C["bg_dark"])
-        self.controller = controller   # reference to main App for page switching
-        self._build_ui()
+        self.store = store
+        self.nav = nav
+        self._stat_cards = {}
+        self._build()
+        self.refresh()
 
-    def _build_ui(self):
-        """Construct dashboard layout."""
+    def _build(self):
+        # Top navbar
+        navbar = tk.Frame(self, bg=C["bg_card"], padx=28, pady=14)
+        navbar.pack(fill="x")
+        tk.Label(navbar, text="🚗 " + APP_TITLE, font=("Georgia", 18, "bold"),
+                 bg=C["bg_card"], fg=C["text_primary"]).pack(side="left")
+        tk.Label(navbar, text="Dashboard", font=FONT_SMALL, bg=C["bg_card"],
+                 fg=C["text_secondary"]).pack(side="left", padx=(16, 0))
+        tk.Button(navbar, text="⏻ Log Out", font=FONT_SMALL, bg=C["bg_card"],
+                  fg=C["text_secondary"], relief="flat", cursor="hand2",
+                  command=self.nav["logout"]).pack(side="right")
+        Separator(self).pack(fill="x")
 
-        # ── Top header bar ────────────────────────────────────────────────
-        header = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=12)
-        header.pack(fill="x")
+        # Main container: left content + right sidebar
+        main_container = tk.Frame(self, bg=C["bg_dark"])
+        main_container.pack(fill="both", expand=True)
 
-        tk.Label(header, text="🚗  WeAreCars  —  Staff Dashboard",
-                 font=FONT_TITLE, fg=C["accent"],
-                 bg=C["bg_mid"]).pack(side="left")
+        # LEFT SIDE (main content)
+        left_frame = tk.Frame(main_container, bg=C["bg_dark"])
+        left_frame.pack(side="left", fill="both", expand=True)
 
-        make_button(header, "⬅  Logout", self.controller.show_login,
-                    bg=C["danger"], fg=C["white"], width=12).pack(side="right")
+        # Scrollable body for left side
+        body_canvas = tk.Canvas(left_frame, bg=C["bg_dark"], highlightthickness=0)
+        body_canvas.pack(fill="both", expand=True)
+        body = tk.Frame(body_canvas, bg=C["bg_dark"])
+        body_canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda e: body_canvas.configure(scrollregion=body_canvas.bbox("all")))
+        pad = {"padx": 28, "pady": 0}
 
-        # ── Scrollable content area ───────────────────────────────────────
-        canvas = tk.Canvas(self, bg=C["bg_dark"], highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        self.scroll_frame = tk.Frame(canvas, bg=C["bg_dark"])
+        # Welcome strip
+        welcome = tk.Frame(body, bg=C["bg_dark"], **pad)
+        welcome.pack(fill="x", pady=(24, 0))
+        tk.Label(welcome, text="Good day! Here's an overview of WeAreCars.",
+                 font=FONT_BODY, bg=C["bg_dark"], fg=C["text_secondary"]).pack(anchor="w")
 
-        self.scroll_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Enable mousewheel scrolling
-        canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
-
-        self._populate(self.scroll_frame)
-
-    def _populate(self, parent):
-        """Fill the scrollable area with stats, chart and action buttons."""
-
-        pad = dict(padx=20, pady=8)
-
-        # ── KPI stats row ─────────────────────────────────────────────────
-        stats_row = tk.Frame(parent, bg=C["bg_dark"])
-        stats_row.pack(fill="x", **pad)
-
-        total_bookings = len(bookings)
-        total_revenue  = sum(b.get("total_price", 0) for b in bookings)
-        pending        = sum(1 for b in bookings if b.get("status") == "Active")
-
-        kpis = [
-            ("📋  Total Bookings", str(total_bookings), C["accent2"]),
-            ("💷  Total Revenue",  f"£{total_revenue:,.2f}", C["success"]),
-            ("🚦  Active Rentals", str(pending), C["accent"]),
+        # Stat cards
+        cards_frame = tk.Frame(body, bg=C["bg_dark"], **pad)
+        cards_frame.pack(fill="x", pady=(16, 0))
+        cards_frame.columnconfigure((0, 1, 2, 3), weight=1)
+        stats = [
+            ("bookings", "📋", "Total Bookings", "0"),
+            ("revenue", "💷", "Total Revenue", "£0.00"),
+            ("avg", "📊", "Avg Booking Value", "£0.00"),
+            ("top_car", "🚗", "Most Popular Car", "N/A"),
         ]
+        for col, (key, icon, title, val) in enumerate(stats):
+            sc = StatCard(cards_frame, icon, title, val)
+            sc.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 10, 0))
+            self._stat_cards[key] = sc
 
-        for label, value, color in kpis:
-            card = tk.Frame(stats_row, bg=C["bg_mid"], padx=20, pady=16)
-            card.pack(side="left", expand=True, fill="both", padx=8)
-            tk.Label(card, text=label, font=FONT_SMALL,
-                     fg=C["text_dim"], bg=C["bg_mid"]).pack(anchor="w")
-            tk.Label(card, text=value, font=("Segoe UI", 22, "bold"),
-                     fg=color, bg=C["bg_mid"]).pack(anchor="w")
-
-        # ── Analytics – car type bar chart (Canvas-drawn) ─────────────────
-        tk.Label(parent, text="📊  Bookings by Car Type",
-                 font=FONT_HEAD, fg=C["text_main"],
-                 bg=C["bg_dark"]).pack(anchor="w", **pad)
-
-        chart_frame = tk.Frame(parent, bg=C["bg_mid"], padx=16, pady=16)
-        chart_frame.pack(fill="x", padx=20, pady=4)
-
-        self._draw_bar_chart(chart_frame)
-
-        # ── Quick actions ─────────────────────────────────────────────────
-        tk.Label(parent, text="⚡  Quick Actions",
-                 font=FONT_HEAD, fg=C["text_main"],
-                 bg=C["bg_dark"]).pack(anchor="w", **pad)
-
-        actions_row = tk.Frame(parent, bg=C["bg_dark"])
-        actions_row.pack(fill="x", padx=20, pady=4)
-
-        action_btns = [
-            ("➕  Add Booking",    self.controller.show_add_booking,   C["success"]),
-            ("📋  View Bookings",  self.controller.show_view_bookings, C["accent2"]),
-            ("✏️  Update Booking", self.controller.show_update_booking, C["accent"]),
-            ("🗑️  Delete Booking", self.controller.show_delete_booking, C["danger"]),
+        # Action buttons
+        actions_label = tk.Frame(body, bg=C["bg_dark"], **pad)
+        actions_label.pack(fill="x", pady=(28, 8))
+        tk.Label(actions_label, text="ACTIONS", font=("Helvetica", 9, "bold"),
+                 bg=C["bg_dark"], fg=C["text_muted"]).pack(anchor="w")
+        btn_grid = tk.Frame(body, bg=C["bg_dark"], **pad)
+        btn_grid.pack(fill="x", pady=(0, 24))
+        actions = [
+            ("➕ New Booking", C["accent"], C["bg_dark"], self.nav["add"]),
+            ("📋 View Bookings", C["bg_card"], C["text_primary"], self.nav["view"]),
+            ("✏️ Update Booking", C["bg_card"], C["text_primary"], self.nav["update"]),
+            ("🗑 Delete Booking", C["danger"], C["text_primary"], self.nav["delete"]),
         ]
+        for i, (label, bg, fg, cmd) in enumerate(actions):
+            btn = tk.Button(btn_grid, text=label, font=FONT_SUBHEAD, bg=bg, fg=fg,
+                            activebackground=C["accent_hover"], activeforeground=C["bg_dark"],
+                            relief="flat", cursor="hand2", pady=14, padx=20, command=cmd)
+            btn.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
+            btn_grid.columnconfigure(i, weight=1)
 
-        for text, cmd, color in action_btns:
-            make_button(actions_row, text, cmd,
-                        bg=color, fg=C["white"] if color != C["accent"] else C["bg_dark"],
-                        width=16).pack(side="left", padx=8, pady=4)
+        # Recent bookings mini-table
+        recent_label = tk.Frame(body, bg=C["bg_dark"], **pad)
+        recent_label.pack(fill="x", pady=(0, 8))
+        tk.Label(recent_label, text="RECENT BOOKINGS", font=("Helvetica", 9, "bold"),
+                 bg=C["bg_dark"], fg=C["text_muted"]).pack(anchor="w")
+        tv_wrap = tk.Frame(body, bg=C["bg_dark"], **pad)
+        tv_wrap.pack(fill="both", expand=True, pady=(0, 28))
+        cols = ("id", "name", "car_type", "days", "total", "created")
+        self.recent_tree = ttk.Treeview(tv_wrap, columns=cols, show="headings", height=6)
+        hdr = [("id","ID",55), ("name","Customer",200), ("car_type","Car",110),
+               ("days","Days",60), ("total","Total",100), ("created","Booked On",140)]
+        for col, heading, width in hdr:
+            self.recent_tree.heading(col, text=heading)
+            self.recent_tree.column(col, width=width, anchor="center" if col != "name" else "w")
+        vsb = ttk.Scrollbar(tv_wrap, orient="vertical", command=self.recent_tree.yview)
+        self.recent_tree.configure(yscrollcommand=vsb.set)
+        self.recent_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="left", fill="y")
 
-        # ── Recent bookings table ─────────────────────────────────────────
-        tk.Label(parent, text="🕑  Recent Bookings",
-                 font=FONT_HEAD, fg=C["text_main"],
-                 bg=C["bg_dark"]).pack(anchor="w", **pad)
+        # RIGHT SIDEBAR
+        right_frame = tk.Frame(main_container, bg=C["bg_card"], width=280, relief="ridge", bd=1)
+        right_frame.pack(side="right", fill="y", padx=(0, 0), pady=0)
+        right_frame.pack_propagate(False)
 
-        self._draw_recent_table(parent)
+        # Title for sidebar
+        tk.Label(right_frame, text="📊 RENTAL INSIGHTS", font=FONT_SUBHEAD,
+                 bg=C["bg_card"], fg=C["accent"]).pack(pady=(16, 8))
 
-    def _draw_bar_chart(self, parent):
-        """Draw a simple canvas bar chart for car-type booking counts."""
-        car_types = list(CAR_PRICES.keys())
-        counts = {ct: 0 for ct in car_types}
-        for b in bookings:
-            ct = b.get("car_type", "")
-            if ct in counts:
-                counts[ct] += 1
+        # Car type popularity
+        self.car_list_frame = tk.Frame(right_frame, bg=C["bg_card"])
+        self.car_list_frame.pack(fill="x", padx=16, pady=8)
+        tk.Label(self.car_list_frame, text="🚘 Most Popular Car Types",
+                 font=FONT_SMALL, bg=C["bg_card"], fg=C["text_secondary"]).pack(anchor="w")
+        self.car_listbox = tk.Listbox(self.car_list_frame, height=6, bg=C["bg_input"],
+                                      fg=C["text_primary"], font=FONT_SMALL,
+                                      selectbackground=C["accent"], selectforeground=C["bg_dark"],
+                                      relief="flat", highlightthickness=0)
+        self.car_listbox.pack(fill="x", pady=(4, 8))
 
-        max_count = max(counts.values(), default=1) or 1
-        bar_colors = [C["accent"], C["accent2"], C["success"], C["danger"]]
+        # Fuel type distribution
+        self.fuel_frame = tk.Frame(right_frame, bg=C["bg_card"])
+        self.fuel_frame.pack(fill="x", padx=16, pady=8)
+        tk.Label(self.fuel_frame, text="⛽ Fuel Type Distribution",
+                 font=FONT_SMALL, bg=C["bg_card"], fg=C["text_secondary"]).pack(anchor="w")
+        self.fuel_listbox = tk.Listbox(self.fuel_frame, height=5, bg=C["bg_input"],
+                                       fg=C["text_primary"], font=FONT_SMALL,
+                                       selectbackground=C["accent"], selectforeground=C["bg_dark"],
+                                       relief="flat", highlightthickness=0)
+        self.fuel_listbox.pack(fill="x", pady=(4, 8))
 
-        chart_w, chart_h = 560, 150
-        c = tk.Canvas(parent, width=chart_w, height=chart_h,
-                      bg=C["bg_mid"], highlightthickness=0)
-        c.pack()
-
-        bar_w   = 80
-        spacing = 40
-        start_x = 40
-
-        for i, ct in enumerate(car_types):
-            count  = counts[ct]
-            x0     = start_x + i * (bar_w + spacing)
-            x1     = x0 + bar_w
-            bar_h  = int((count / max_count) * 100) if max_count else 0
-            y0     = chart_h - 30 - bar_h
-            y1     = chart_h - 30
-
-            # Draw bar
-            c.create_rectangle(x0, y0, x1, y1,
-                                fill=bar_colors[i], outline="")
-
-            # Count label above bar
-            c.create_text((x0 + x1) // 2, y0 - 8,
-                          text=str(count), fill=C["text_main"],
-                          font=FONT_SMALL)
-
-            # Car type label below bar
-            short = ct.replace(" Car", "").replace("ful Electric", ".E")
-            c.create_text((x0 + x1) // 2, chart_h - 14,
-                          text=short, fill=C["text_dim"],
-                          font=FONT_SMALL)
-
-    def _draw_recent_table(self, parent):
-        """Display the 5 most recent bookings in a Treeview table."""
-        cols = ("ID", "Name", "Car Type", "Days", "Total", "Status")
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Dark.Treeview",
-                        background=C["bg_card"],
-                        foreground=C["text_main"],
-                        fieldbackground=C["bg_card"],
-                        rowheight=28,
-                        font=FONT_BODY)
-        style.configure("Dark.Treeview.Heading",
-                        background=C["bg_mid"],
-                        foreground=C["accent"],
-                        font=FONT_SUBHEAD)
-        style.map("Dark.Treeview",
-                  background=[("selected", C["accent"])],
-                  foreground=[("selected", C["bg_dark"])])
-
-        tree = ttk.Treeview(parent, columns=cols, show="headings",
-                            height=5, style="Dark.Treeview")
-
-        col_widths = [50, 150, 120, 60, 90, 80]
-        for col, w in zip(cols, col_widths):
-            tree.heading(col, text=col)
-            tree.column(col, width=w, anchor="center")
-
-        # Show last 5 bookings (most recent first)
-        for b in reversed(bookings[-5:]):
-            name = f"{b.get('first_name','')} {b.get('surname','')}"
-            tree.insert("", "end", values=(
-                b.get("id", ""),
-                name,
-                b.get("car_type", ""),
-                b.get("days", ""),
-                f"£{b.get('total_price', 0):.2f}",
-                b.get("status", "Active")
-            ))
-
-        tree.pack(fill="x", padx=20, pady=(0, 20))
+        # Extra note
+        tk.Label(right_frame, text="Double-click any row to edit",
+                 font=FONT_SMALL, bg=C["bg_card"], fg=C["text_muted"]).pack(side="bottom", pady=12)
 
     def refresh(self):
-        """Refresh dashboard by rebuilding the content area."""
-        for widget in self.scroll_frame.winfo_children():
-            widget.destroy()
-        self._populate(self.scroll_frame)
+        s = self.store
+        self._stat_cards["bookings"].update_value(str(len(s.bookings)))
+        self._stat_cards["revenue"].update_value(f"£{s.total_revenue():,.2f}")
+        self._stat_cards["avg"].update_value(f"£{s.average_booking_value():,.2f}")
+        self._stat_cards["top_car"].update_value(s.most_popular_car_type())
+
+        # Update recent bookings
+        for row in self.recent_tree.get_children():
+            self.recent_tree.delete(row)
+        recent = sorted(s.bookings, key=lambda b: b.get("id", 0), reverse=True)[:6]
+        for b in recent:
+            name = f"{b.get('first_name','')} {b.get('surname','')}"
+            self.recent_tree.insert("", "end", values=(
+                b.get("id", ""), name, b.get("car_type", ""),
+                b.get("days", ""), f"£{b.get('total_cost', 0):.2f}", b.get("created_at", "")
+            ))
+
+        # Update right sidebar lists
+        car_counts = s.car_type_counts()
+        self.car_listbox.delete(0, tk.END)
+        for car, cnt in sorted(car_counts.items(), key=lambda x: x[1], reverse=True):
+            self.car_listbox.insert(tk.END, f"{car}: {cnt} booking{'s' if cnt != 1 else ''}")
+        if not car_counts:
+            self.car_listbox.insert(tk.END, "No bookings yet")
+
+        fuel_counts = s.fuel_type_counts()
+        self.fuel_listbox.delete(0, tk.END)
+        for fuel, cnt in sorted(fuel_counts.items(), key=lambda x: x[1], reverse=True):
+            self.fuel_listbox.insert(tk.END, f"{fuel}: {cnt} booking{'s' if cnt != 1 else ''}")
+        if not fuel_counts:
+            self.fuel_listbox.insert(tk.END, "No data")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ADD BOOKING FRAME
-# ─────────────────────────────────────────────────────────────────────────────
-
-class AddBookingFrame(tk.Frame):
-    """
-    New booking form.
-    Collects all customer and rental details, validates inputs,
-    calculates total price, shows confirmation summary and saves booking.
-    """
-
-    def __init__(self, parent, controller):
+# ─────────────────────── BOOKING FORM ────────────────────────────────────────
+class BookingForm(tk.Frame):
+    """Shared form for adding / editing a booking."""
+    def __init__(self, parent, store: BookingStore, on_save, on_cancel, existing: Optional[dict] = None):
         super().__init__(parent, bg=C["bg_dark"])
-        self.controller = controller
-        self._build_ui()
+        self.store = store
+        self.on_save = on_save
+        self.on_cancel = on_cancel
+        self.existing = existing
+        self._build()
+        if existing:
+            self._populate(existing)
 
-    def _build_ui(self):
-        """Build the booking form layout."""
+    # Helper layout methods
+    def _section(self, title: str) -> tk.Frame:
+        wrapper = tk.Frame(self.body, bg=C["bg_dark"], padx=28, pady=6)
+        wrapper.pack(fill="x")
+        tk.Label(wrapper, text=title, font=("Helvetica", 10, "bold"),
+                 bg=C["bg_dark"], fg=C["accent"]).pack(anchor="w", pady=(0, 6))
+        card = tk.Frame(wrapper, bg=C["bg_card"], highlightthickness=1,
+                        highlightbackground=C["border"], padx=20, pady=16)
+        card.pack(fill="x")
+        return card
 
-        # ── Header ────────────────────────────────────────────────────────
-        header = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=12)
-        header.pack(fill="x")
-        tk.Label(header, text="➕  Add New Booking",
-                 font=FONT_TITLE, fg=C["accent"],
-                 bg=C["bg_mid"]).pack(side="left")
-        make_button(header, "⬅  Dashboard",
-                    self.controller.show_dashboard,
-                    bg=C["bg_card"], fg=C["text_main"],
-                    width=14).pack(side="right")
+    @staticmethod
+    def _lbl(parent, text: str):
+        tk.Label(parent, text=text, font=FONT_SMALL, bg=C["bg_card"],
+                 fg=C["text_secondary"]).pack(anchor="w")
 
-        # ── Scrollable form ───────────────────────────────────────────────
-        canvas = tk.Canvas(self, bg=C["bg_dark"], highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        form_frame = tk.Frame(canvas, bg=C["bg_dark"])
-        form_frame.bind("<Configure>",
-                        lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=form_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+    @staticmethod
+    def _row(parent) -> tk.Frame:
+        f = tk.Frame(parent, bg=C["bg_card"])
+        f.pack(fill="x", pady=6)
+        return f
 
-        self._build_form(form_frame)
+    @staticmethod
+    def _col(parent, padright=0) -> tk.Frame:
+        f = tk.Frame(parent, bg=C["bg_card"])
+        f.pack(side="left", fill="x", expand=True, padx=(0, padright) if padright else 0)
+        return f
 
-    def _build_form(self, parent):
-        """Populate form sections inside the scrollable frame."""
-
-        # ── Section: Customer Details ─────────────────────────────────────
-        self._section_label(parent, "👤  Customer Details")
-        cust = tk.Frame(parent, bg=C["bg_mid"], padx=20, pady=16)
-        cust.pack(fill="x", padx=20, pady=(0, 12))
-
-        self.first_name_var = tk.StringVar()
-        self.surname_var    = tk.StringVar()
-        self.address_var    = tk.StringVar()
-        self.age_var        = tk.StringVar()
-
-        self._form_row(cust, "Customer First Name *", self.first_name_var)
-        self._form_row(cust, "Customer Surname *",    self.surname_var)
-        self._form_row(cust, "Customer Address *",    self.address_var, width=50)
-        self._form_row(cust, "Customer Age *",        self.age_var)
-
-        # Driving licence radio (Yes / No)
-        lic_frame = tk.Frame(cust, bg=C["bg_mid"])
-        lic_frame.pack(fill="x", pady=4)
-        tk.Label(lic_frame, text="Valid Driving Licence *",
-                 font=FONT_BODY, fg=C["text_main"],
-                 bg=C["bg_mid"], width=24, anchor="w").pack(side="left")
-        self.licence_var = tk.StringVar(value="Yes")
-        for val in ("Yes", "No"):
-            tk.Radiobutton(lic_frame, text=val, variable=self.licence_var,
-                           value=val, bg=C["bg_mid"], fg=C["text_main"],
-                           selectcolor=C["entry_bg"], activebackground=C["bg_mid"],
-                           font=FONT_BODY).pack(side="left", padx=8)
-
-        # ── Section: Rental Options ───────────────────────────────────────
-        self._section_label(parent, "🚗  Rental Options")
-        rental = tk.Frame(parent, bg=C["bg_mid"], padx=20, pady=16)
-        rental.pack(fill="x", padx=20, pady=(0, 12))
-
-        # Number of days
-        days_frame = tk.Frame(rental, bg=C["bg_mid"])
-        days_frame.pack(fill="x", pady=4)
-        tk.Label(days_frame, text="Number of Days * (1–28)",
-                 font=FONT_BODY, fg=C["text_main"],
-                 bg=C["bg_mid"], width=24, anchor="w").pack(side="left")
-        self.days_var = tk.IntVar(value=1)
-        tk.Spinbox(days_frame, from_=1, to=28, textvariable=self.days_var,
-                   width=8, bg=C["entry_bg"], fg=C["text_main"],
-                   buttonbackground=C["bg_card"], relief="flat",
-                   font=FONT_BODY, insertbackground=C["accent"],
-                   command=self._update_price_preview).pack(side="left", padx=8)
-
-        # Car type
-        self.car_type_var = tk.StringVar(value="City Car")
-        self._option_row(rental, "Car Type *", self.car_type_var,
-                         list(CAR_PRICES.keys()),
-                         lambda _: self._update_price_preview())
-
-        # Fuel type
-        self.fuel_var = tk.StringVar(value="Petrol")
-        self._option_row(rental, "Fuel Type *", self.fuel_var,
-                         list(FUEL_PRICES.keys()),
-                         lambda _: self._update_price_preview())
-
-        # ── Section: Optional Extras ──────────────────────────────────────
-        self._section_label(parent, "➕  Optional Extras")
-        extras = tk.Frame(parent, bg=C["bg_mid"], padx=20, pady=16)
-        extras.pack(fill="x", padx=20, pady=(0, 12))
-
-        self.mileage_var   = tk.BooleanVar(value=False)
-        self.breakdown_var = tk.BooleanVar(value=False)
-
-        self._check_row(extras, "Unlimited Mileage (+£10/day)",
-                        self.mileage_var)
-        self._check_row(extras, "Breakdown Cover (+£2/day)",
-                        self.breakdown_var)
-
-        # ── Price Preview ─────────────────────────────────────────────────
-        price_frame = tk.Frame(parent, bg=C["bg_card"], padx=20, pady=12)
-        price_frame.pack(fill="x", padx=20, pady=(0, 12))
-
-        tk.Label(price_frame, text="💷  Estimated Total",
-                 font=FONT_SUBHEAD, fg=C["text_dim"],
-                 bg=C["bg_card"]).pack(side="left")
-
-        self.price_preview_lbl = tk.Label(price_frame, text="£0.00",
-                                          font=("Segoe UI", 18, "bold"),
-                                          fg=C["success"], bg=C["bg_card"])
-        self.price_preview_lbl.pack(side="right")
-
-        # Bind spinbox/checkbox changes to refresh price
-        self.mileage_var.trace_add("write",   lambda *a: self._update_price_preview())
-        self.breakdown_var.trace_add("write",  lambda *a: self._update_price_preview())
-        self.days_var.trace_add("write",       lambda *a: self._update_price_preview())
-        self._update_price_preview()  # initial calculation
-
-        # ── Action buttons ────────────────────────────────────────────────
-        btn_row = tk.Frame(parent, bg=C["bg_dark"])
-        btn_row.pack(pady=16, padx=20)
-
-        make_button(btn_row, "📋  Preview & Confirm",
-                    self._confirm_booking, bg=C["accent"], width=20).pack(
-                    side="left", padx=8)
-        make_button(btn_row, "🔄  Clear Form",
-                    self._clear_form, bg=C["bg_card"],
-                    fg=C["text_main"], width=14).pack(side="left", padx=8)
-
-    # ── Form helper builders ──────────────────────────────────────────────
-
-    def _section_label(self, parent, text):
-        """Render a bold section heading."""
-        row = tk.Frame(parent, bg=C["bg_dark"])
-        row.pack(fill="x", padx=20, pady=(14, 2))
-        tk.Label(row, text=text, font=FONT_HEAD,
-                 fg=C["accent2"], bg=C["bg_dark"]).pack(side="left")
-
-    def _form_row(self, parent, label, var, width=30):
-        """Render a label + entry pair."""
-        row = tk.Frame(parent, bg=C["bg_mid"])
-        row.pack(fill="x", pady=4)
-        tk.Label(row, text=label, font=FONT_BODY,
-                 fg=C["text_main"], bg=C["bg_mid"],
-                 width=24, anchor="w").pack(side="left")
-        make_entry(row, textvariable=var, width=width).pack(side="left", padx=8)
-
-    def _option_row(self, parent, label, var, options, on_change=None):
-        """Render a label + OptionMenu dropdown."""
-        row = tk.Frame(parent, bg=C["bg_mid"])
-        row.pack(fill="x", pady=4)
-        tk.Label(row, text=label, font=FONT_BODY,
-                 fg=C["text_main"], bg=C["bg_mid"],
-                 width=24, anchor="w").pack(side="left")
-        menu = tk.OptionMenu(row, var, *options,
-                             command=on_change)
-        menu.config(bg=C["entry_bg"], fg=C["text_main"],
-                    activebackground=C["bg_card"],
-                    activeforeground=C["text_main"],
-                    relief="flat", font=FONT_BODY,
-                    highlightthickness=0, width=18)
-        menu["menu"].config(bg=C["bg_card"], fg=C["text_main"],
-                            font=FONT_BODY)
-        menu.pack(side="left", padx=8)
-
-    def _check_row(self, parent, label, var):
-        """Render a checkbox option row."""
-        row = tk.Frame(parent, bg=C["bg_mid"])
-        row.pack(fill="x", pady=4)
-        tk.Checkbutton(row, text=label, variable=var,
-                       bg=C["bg_mid"], fg=C["text_main"],
-                       selectcolor=C["entry_bg"],
-                       activebackground=C["bg_mid"],
-                       font=FONT_BODY).pack(side="left")
-
-    # ── Price calculation ─────────────────────────────────────────────────
-
-    def _calculate_total(self):
-        """
-        Compute the total rental price based on:
-        - Number of days × base rate (£25/day)
-        - Car type surcharge (flat)
-        - Fuel type surcharge (flat)
-        - Optional extras per day
-        Returns (days, breakdown dict, total) tuple.
-        """
-        try:
-            days = int(self.days_var.get())
-        except (ValueError, tk.TclError):
-            days = 1
-
-        days = max(1, min(28, days))   # clamp to valid range
-
-        base       = days * BASE_RATE
-        car_extra  = CAR_PRICES.get(self.car_type_var.get(), 0)
-        fuel_extra = FUEL_PRICES.get(self.fuel_var.get(), 0)
-        mileage    = days * MILEAGE_RATE  if self.mileage_var.get() else 0
-        breakdown  = days * BREAKDOWN_RATE if self.breakdown_var.get() else 0
-
-        total = base + car_extra + fuel_extra + mileage + breakdown
-
-        breakdown_dict = {
-            "Base rate":       f"£{BASE_RATE}/day × {days} days = £{base}",
-            "Car type":        f"+£{car_extra} ({self.car_type_var.get()})",
-            "Fuel type":       f"+£{fuel_extra} ({self.fuel_var.get()})",
-            "Unlimited mileage": f"+£{mileage}" if mileage else "Not selected",
-            "Breakdown cover": f"+£{breakdown}" if breakdown else "Not selected",
-        }
-
-        return days, breakdown_dict, total
-
-    def _update_price_preview(self):
-        """Refresh the live price preview label."""
-        _, _, total = self._calculate_total()
-        self.price_preview_lbl.config(text=f"£{total:.2f}")
-
-    # ── Validation ────────────────────────────────────────────────────────
-
-    def _validate(self):
-        """
-        Validate all mandatory form fields.
-        Returns (True, None) if valid, (False, error_message) otherwise.
-        """
-        name    = self.first_name_var.get().strip()
-        surname = self.surname_var.get().strip()
-        address = self.address_var.get().strip()
-        age_str = self.age_var.get().strip()
-
-        if not name:
-            return False, "Customer First Name is required."
-        if not re.match(r"^[A-Za-z\-']{1,50}$", name):
-            return False, "First name must contain only letters (max 50 chars)."
-
-        if not surname:
-            return False, "Customer Surname is required."
-        if not re.match(r"^[A-Za-z\-']{1,50}$", surname):
-            return False, "Surname must contain only letters (max 50 chars)."
-
-        if not address:
-            return False, "Customer Address is required."
-        if len(address) < 5:
-            return False, "Please enter a valid full address."
-
-        if not age_str:
-            return False, "Customer Age is required."
-        try:
-            age = int(age_str)
-            if age < 18 or age > 100:
-                return False, "Customer must be aged 18–100 to rent a car."
-        except ValueError:
-            return False, "Age must be a whole number."
-
-        if self.licence_var.get() == "No":
-            return False, "⛔  Booking cannot proceed without a valid driving licence."
-
-        try:
-            days = int(self.days_var.get())
-            if days < 1 or days > 28:
-                return False, "Number of days must be between 1 and 28."
-        except (ValueError, tk.TclError):
-            return False, "Number of days must be a valid integer."
-
-        return True, None
-
-    # ── Actions ───────────────────────────────────────────────────────────
-
-    def _confirm_booking(self):
-        """Validate inputs and show the summary confirmation dialog."""
-        ok, err = self._validate()
-        if not ok:
-            messagebox.showerror("Validation Error", err, parent=self)
-            return
-
-        days, price_breakdown, total = self._calculate_total()
-
-        # Build confirmation summary text
-        summary_lines = [
-            f"  Customer    : {self.first_name_var.get().strip()} {self.surname_var.get().strip()}",
-            f"  Address     : {self.address_var.get().strip()}",
-            f"  Age         : {self.age_var.get().strip()}",
-            f"  Licence     : {self.licence_var.get()}",
-            "─" * 42,
-            f"  Car Type    : {self.car_type_var.get()}",
-            f"  Fuel        : {self.fuel_var.get()}",
-            f"  Days        : {days}",
-            "─" * 42,
-            "  PRICE BREAKDOWN:",
-        ]
-        for k, v in price_breakdown.items():
-            summary_lines.append(f"    {k:<22}: {v}")
-        summary_lines += [
-            "─" * 42,
-            f"  TOTAL PRICE : £{total:.2f}",
-        ]
-
-        summary = "\n".join(summary_lines)
-
-        # Confirmation dialog
-        confirm = messagebox.askyesno(
-            "Confirm Booking",
-            f"Please review the booking details:\n\n{summary}\n\n"
-            "Click YES to save this booking, NO to go back and edit.",
-            parent=self
-        )
-
-        if confirm:
-            self._save_booking(days, total)
-
-    def _save_booking(self, days, total):
-        """Save the validated booking to the global bookings list and JSON file."""
-        # Generate simple sequential booking ID
-        new_id = f"WC{len(bookings) + 1:04d}"
-
-        record = {
-            "id":          new_id,
-            "first_name":  self.first_name_var.get().strip(),
-            "surname":     self.surname_var.get().strip(),
-            "address":     self.address_var.get().strip(),
-            "age":         int(self.age_var.get().strip()),
-            "licence":     self.licence_var.get(),
-            "days":        days,
-            "car_type":    self.car_type_var.get(),
-            "fuel_type":   self.fuel_var.get(),
-            "mileage":     self.mileage_var.get(),
-            "breakdown":   self.breakdown_var.get(),
-            "total_price": total,
-            "status":      "Active",
-            "created_at":  datetime.now().strftime("%Y-%m-%d %H:%M"),
-        }
-
-        bookings.append(record)
-        save_bookings(bookings)
-
-        messagebox.showinfo(
-            "Booking Saved",
-            f"✅  Booking {new_id} has been saved successfully!\n\n"
-            f"Customer: {record['first_name']} {record['surname']}\n"
-            f"Total: £{total:.2f}",
-            parent=self
-        )
-        self._clear_form()
-        self.controller.show_dashboard()   # return to refreshed dashboard
-
-    def _clear_form(self):
-        """Reset all form fields to default values."""
-        self.first_name_var.set("")
-        self.surname_var.set("")
-        self.address_var.set("")
-        self.age_var.set("")
-        self.licence_var.set("Yes")
-        self.days_var.set(1)
-        self.car_type_var.set("City Car")
-        self.fuel_var.set("Petrol")
-        self.mileage_var.set(False)
-        self.breakdown_var.set(False)
-        self._update_price_preview()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  VIEW BOOKINGS FRAME
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ViewBookingsFrame(tk.Frame):
-    """
-    Displays all current bookings in a searchable, scrollable table.
-    Double-click a booking to view full details.
-    """
-
-    def __init__(self, parent, controller):
-        super().__init__(parent, bg=C["bg_dark"])
-        self.controller = controller
-        self._build_ui()
-
-    def _build_ui(self):
+    def _build(self):
         # Header
-        header = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=12)
-        header.pack(fill="x")
-        tk.Label(header, text="📋  All Bookings",
-                 font=FONT_TITLE, fg=C["accent"],
-                 bg=C["bg_mid"]).pack(side="left")
-        make_button(header, "⬅  Dashboard",
-                    self.controller.show_dashboard,
-                    bg=C["bg_card"], fg=C["text_main"],
-                    width=14).pack(side="right")
+        hdr = tk.Frame(self, bg=C["bg_card"], padx=28, pady=16)
+        hdr.pack(fill="x")
+        ttl = "✏️ Edit Booking" if self.existing else "➕ New Booking"
+        tk.Label(hdr, text=ttl, font=FONT_HEADING, bg=C["bg_card"],
+                 fg=C["text_primary"]).pack(side="left")
+        tk.Button(hdr, text="✕ Cancel", font=FONT_SMALL, bg=C["bg_card"],
+                  fg=C["text_secondary"], relief="flat", cursor="hand2",
+                  command=self.on_cancel).pack(side="right")
+        Separator(self).pack(fill="x")
+
+        # Scrollable body
+        canvas = tk.Canvas(self, bg=C["bg_dark"], highlightthickness=0)
+        sb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(canvas, bg=C["bg_dark"])
+        win = canvas.create_window((0, 0), window=self.body, anchor="nw")
+
+        def _cfg(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(win, width=e.width)
+        canvas.bind("<Configure>", _cfg)
+        self.body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        self._build_fields()
+
+    def _build_fields(self):
+        # Personal Details
+        p = self._section("👤 Personal Details")
+        row1 = self._row(p)
+        c1 = self._col(row1, 10)
+        self._lbl(c1, "First Name *")
+        self.fn_var = tk.StringVar()
+        ttk.Entry(c1, textvariable=self.fn_var, font=FONT_BODY).pack(fill="x")
+        c2 = self._col(row1)
+        self._lbl(c2, "Surname *")
+        self.sn_var = tk.StringVar()
+        ttk.Entry(c2, textvariable=self.sn_var, font=FONT_BODY).pack(fill="x")
+
+        row2 = self._row(p)
+        c3 = self._col(row2)
+        self._lbl(c3, "Address *")
+        self.addr_var = tk.StringVar()
+        ttk.Entry(c3, textvariable=self.addr_var, font=FONT_BODY).pack(fill="x")
+
+        row3 = self._row(p)
+        c4 = self._col(row3, 10)
+        self._lbl(c4, "Age * (must be 18+)")
+        self.age_var = tk.StringVar()
+        ttk.Entry(c4, textvariable=self.age_var, font=FONT_BODY).pack(fill="x")
+        c5 = self._col(row3)
+        self._lbl(c5, "Driving Licence *")
+        self.lic_var = tk.StringVar(value="Yes")
+        ttk.Combobox(c5, textvariable=self.lic_var, values=["Yes", "No"],
+                     state="readonly", font=FONT_BODY).pack(fill="x")
+
+        # Rental Details
+        r = self._section("🚗 Rental Details")
+        row4 = self._row(r)
+        c6 = self._col(row4, 10)
+        self._lbl(c6, "Number of Days * (1–28, £25/day)")
+        self.days_var = tk.StringVar()
+        self.days_var.trace_add("write", self._update_price)
+        ttk.Entry(c6, textvariable=self.days_var, font=FONT_BODY).pack(fill="x")
+        c7 = self._col(row4)
+        self._lbl(c7, "Car Type *")
+        self.car_var = tk.StringVar()
+        self.car_var.trace_add("write", self._update_price)
+        ttk.Combobox(c7, textvariable=self.car_var, values=list(CAR_TYPE_SURCHARGE.keys()),
+                     state="readonly", font=FONT_BODY).pack(fill="x")
+        tk.Label(r, text="Car Type pricing: City Car +£0 | Family Car +£50 | Sports Car +£75 | SUV +£65",
+                 font=FONT_SMALL, bg=C["bg_card"], fg=C["text_muted"]).pack(anchor="w", pady=(2, 6))
+
+        row5 = self._row(r)
+        c8 = self._col(row5)
+        self._lbl(c8, "Fuel Type *")
+        self.fuel_var = tk.StringVar()
+        self.fuel_var.trace_add("write", self._update_price)
+        ttk.Combobox(c8, textvariable=self.fuel_var, values=list(FUEL_TYPE_SURCHARGE.keys()),
+                     state="readonly", font=FONT_BODY).pack(fill="x")
+        tk.Label(r, text="Fuel pricing: Petrol +£0 | Diesel +£0 | Hybrid +£30 | Electric +£50",
+                 font=FONT_SMALL, bg=C["bg_card"], fg=C["text_muted"]).pack(anchor="w", pady=(2, 0))
+
+        # Extras
+        e = self._section("⭐ Optional Extras")
+        ex_row = self._row(e)
+        self.mile_var = tk.BooleanVar()
+        self.mile_var.trace_add("write", self._update_price)
+        ttk.Checkbutton(ex_row, text=" Unlimited Mileage (+£10/day)",
+                        variable=self.mile_var, style="TCheckbutton").pack(side="left", padx=(0, 30))
+        self.brkd_var = tk.BooleanVar()
+        self.brkd_var.trace_add("write", self._update_price)
+        ttk.Checkbutton(ex_row, text=" Breakdown Cover (+£2/day)",
+                        variable=self.brkd_var, style="TCheckbutton").pack(side="left")
+
+        # Price estimate
+        pr = self._section("💷 Estimated Price")
+        self.price_lbl = tk.Label(pr, text="Complete rental details above to see price estimate.",
+                                  font=FONT_BODY, bg=C["bg_card"], fg=C["text_secondary"], justify="left")
+        self.price_lbl.pack(anchor="w")
+
+        # Save / Cancel
+        btn_wrap = tk.Frame(self.body, bg=C["bg_dark"], padx=28, pady=20)
+        btn_wrap.pack(fill="x")
+        save_txt = "✏️ Update Booking" if self.existing else "💾 Save Booking"
+        tk.Button(btn_wrap, text=save_txt, font=FONT_SUBHEAD, bg=C["accent"], fg=C["bg_dark"],
+                  activebackground=C["accent_hover"], activeforeground=C["bg_dark"],
+                  relief="flat", cursor="hand2", padx=18, pady=10, command=self._submit).pack(side="left", padx=(0, 10))
+        tk.Button(btn_wrap, text="Cancel", font=FONT_BODY, bg=C["bg_card"], fg=C["text_secondary"],
+                  activebackground=C["highlight"], relief="flat", cursor="hand2", padx=16, pady=10,
+                  command=self.on_cancel).pack(side="left")
+
+    def _update_price(self, *_):
+        try:
+            days = int(self.days_var.get())
+            car = self.car_var.get()
+            fuel = self.fuel_var.get()
+            if not (1 <= days <= 28) or car not in CAR_TYPE_SURCHARGE or fuel not in FUEL_TYPE_SURCHARGE:
+                return
+            bp = calculate_price(days, car, fuel, self.mile_var.get(), self.brkd_var.get())
+            lines = [f"Base ({days}d × £{BASE_RATE_PER_DAY}): £{bp['base']:.2f}"]
+            if bp["car_surcharge"]:
+                lines.append(f"{car} surcharge: £{bp['car_surcharge']:.2f}")
+            if bp["fuel_surcharge"]:
+                lines.append(f"{fuel} surcharge: £{bp['fuel_surcharge']:.2f}")
+            if bp["mileage_cost"]:
+                lines.append(f"Unlimited mileage: £{bp['mileage_cost']:.2f}")
+            if bp["breakdown_cost"]:
+                lines.append(f"Breakdown cover: £{bp['breakdown_cost']:.2f}")
+            lines.append(f"\n TOTAL: £{bp['total']:.2f}")
+            self.price_lbl.config(text="\n".join(lines), fg=C["text_primary"], font=FONT_MONO)
+        except (ValueError, TypeError):
+            self.price_lbl.config(text="Complete rental details above to see price estimate.",
+                                  fg=C["text_secondary"], font=FONT_BODY)
+
+    def _populate(self, b: dict):
+        self.fn_var.set(b.get("first_name", ""))
+        self.sn_var.set(b.get("surname", ""))
+        self.addr_var.set(b.get("address", ""))
+        self.age_var.set(str(b.get("age", "")))
+        self.lic_var.set(b.get("driving_license", "Yes"))
+        self.days_var.set(str(b.get("days", "")))
+        self.car_var.set(b.get("car_type", ""))
+        self.fuel_var.set(b.get("fuel_type", ""))
+        self.mile_var.set(b.get("unlimited_mileage", False))
+        self.brkd_var.set(b.get("breakdown_cover", False))
+
+    def _collect(self) -> dict:
+        return {
+            "first_name": self.fn_var.get().strip(),
+            "surname": self.sn_var.get().strip(),
+            "address": self.addr_var.get().strip(),
+            "age": self.age_var.get().strip(),
+            "driving_license": self.lic_var.get(),
+            "days": self.days_var.get().strip(),
+            "car_type": self.car_var.get(),
+            "fuel_type": self.fuel_var.get(),
+            "unlimited_mileage": self.mile_var.get(),
+            "breakdown_cover": self.brkd_var.get(),
+        }
+
+    def _submit(self):
+        fields = self._collect()
+        errors = validate_booking_fields(fields)
+        if errors:
+            messagebox.showerror("Validation Error", "Please fix the following:\n\n• " + "\n• ".join(errors), parent=self)
+            return
+        days = int(fields["days"])
+        age = int(fields["age"])
+        bp = calculate_price(days, fields["car_type"], fields["fuel_type"],
+                             fields["unlimited_mileage"], fields["breakdown_cover"])
+        record = {
+            "first_name": fields["first_name"],
+            "surname": fields["surname"],
+            "address": fields["address"],
+            "age": age,
+            "driving_license": fields["driving_license"],
+            "days": days,
+            "car_type": fields["car_type"],
+            "fuel_type": fields["fuel_type"],
+            "unlimited_mileage": fields["unlimited_mileage"],
+            "breakdown_cover": fields["breakdown_cover"],
+            "total_cost": bp["total"],
+            "price_breakdown": bp,
+        }
+        summary = self._build_summary(record, bp)
+        if not messagebox.askyesno("Confirm Booking", summary, parent=self):
+            return
+        if self.existing:
+            self.store.update(self.existing["id"], record)
+            messagebox.showinfo("Updated", "Booking updated successfully.", parent=self)
+        else:
+            self.store.add(record)
+            messagebox.showinfo("Saved", "Booking saved successfully.", parent=self)
+        self.on_save()
+
+    @staticmethod
+    def _build_summary(rec: dict, bp: dict) -> str:
+        extras = []
+        if rec["unlimited_mileage"]:
+            extras.append(f"Unlimited Mileage (+£{bp['mileage_cost']:.2f})")
+        if rec["breakdown_cover"]:
+            extras.append(f"Breakdown Cover (+£{bp['breakdown_cost']:.2f})")
+        e_str = ", ".join(extras) if extras else "None"
+        return (
+            f"Please review your booking:\n\n"
+            f" Customer : {rec['first_name']} {rec['surname']}\n"
+            f" Age : {rec['age']}\n"
+            f" Address : {rec['address']}\n"
+            f" Car Type : {rec['car_type']}\n"
+            f" Fuel Type: {rec['fuel_type']}\n"
+            f" Days : {rec['days']}\n"
+            f" Extras : {e_str}\n"
+            f"\n ──────────────────────────────\n"
+            f" TOTAL COST: £{bp['total']:.2f}\n"
+            f"\nDo you want to confirm this booking?"
+        )
+
+
+# ─────────────────────── BOOKINGS VIEW ───────────────────────────────────────
+class BookingsView(tk.Frame):
+    """Full treeview of all bookings with search and actions."""
+    def __init__(self, parent, store: BookingStore, on_edit, on_delete, on_back):
+        super().__init__(parent, bg=C["bg_dark"])
+        self.store = store
+        self.on_edit = on_edit
+        self.on_delete = on_delete
+        self.on_back = on_back
+        self._sort_col = "id"
+        self._sort_asc = False
+        self._build()
+        self.refresh()
+
+    def _build(self):
+        # Header
+        hdr = tk.Frame(self, bg=C["bg_card"], padx=28, pady=16)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="📋 All Bookings", font=FONT_HEADING, bg=C["bg_card"],
+                 fg=C["text_primary"]).pack(side="left")
+        tk.Button(hdr, text="← Dashboard", font=FONT_SMALL, bg=C["bg_card"],
+                  fg=C["text_secondary"], relief="flat", cursor="hand2",
+                  command=self.on_back).pack(side="right")
+        Separator(self).pack(fill="x")
 
         # Search bar
-        search_row = tk.Frame(self, bg=C["bg_dark"], padx=20, pady=10)
-        search_row.pack(fill="x")
-        tk.Label(search_row, text="🔍  Search:",
-                 font=FONT_BODY, fg=C["text_dim"],
-                 bg=C["bg_dark"]).pack(side="left")
+        sf = tk.Frame(self, bg=C["bg_dark"], padx=28, pady=12)
+        sf.pack(fill="x")
+        tk.Label(sf, text="🔍 Search:", font=FONT_BODY, bg=C["bg_dark"],
+                 fg=C["text_secondary"]).pack(side="left")
         self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *a: self._refresh_table())
-        make_entry(search_row, textvariable=self.search_var, width=30).pack(
-            side="left", padx=8)
+        self.search_var.trace_add("write", lambda *_: self.refresh())
+        ttk.Entry(sf, textvariable=self.search_var, font=FONT_BODY, width=32).pack(side="left", padx=8)
+        tk.Button(sf, text="Clear", font=FONT_SMALL, bg=C["bg_card"], fg=C["text_secondary"],
+                  relief="flat", cursor="hand2", command=lambda: self.search_var.set("")).pack(side="left")
+        self.count_lbl = tk.Label(sf, text="", font=FONT_SMALL, bg=C["bg_dark"], fg=C["text_muted"])
+        self.count_lbl.pack(side="right")
 
-        # Treeview table
-        cols = ("ID", "Name", "Car Type", "Fuel", "Days", "Total", "Status", "Date")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings",
-                                 style="Dark.Treeview")
-
-        col_widths = [70, 150, 110, 110, 50, 80, 70, 130]
-        for col, w in zip(cols, col_widths):
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=w, anchor="center")
-
-        self.tree.pack(fill="both", expand=True, padx=20, pady=8)
-        self.tree.bind("<Double-1>", self._view_detail)
-
-        # Total count label
-        self.count_lbl = tk.Label(self, text="",
-                                  font=FONT_SMALL, fg=C["text_dim"],
-                                  bg=C["bg_dark"])
-        self.count_lbl.pack(anchor="e", padx=20, pady=4)
-
-        self._refresh_table()
-
-    def _refresh_table(self):
-        """Populate / filter the Treeview with current bookings."""
-        query = self.search_var.get().lower()
-        self.tree.delete(*self.tree.get_children())
-
-        shown = 0
-        for b in reversed(bookings):
-            name = f"{b.get('first_name','')} {b.get('surname','')}".lower()
-            if query and query not in name and query not in b.get("id","").lower():
-                continue
-            full_name = f"{b.get('first_name','')} {b.get('surname','')}"
-            self.tree.insert("", "end", iid=b["id"], values=(
-                b.get("id", ""),
-                full_name,
-                b.get("car_type", ""),
-                b.get("fuel_type", ""),
-                b.get("days", ""),
-                f"£{b.get('total_price', 0):.2f}",
-                b.get("status", "Active"),
-                b.get("created_at", ""),
-            ))
-            shown += 1
-
-        self.count_lbl.config(text=f"Showing {shown} of {len(bookings)} bookings")
-
-    def _view_detail(self, event):
-        """Show full booking detail on double-click."""
-        sel = self.tree.focus()
-        if not sel:
-            return
-        booking = next((b for b in bookings if b["id"] == sel), None)
-        if not booking:
-            return
-
-        detail = (
-            f"Booking ID  : {booking['id']}\n"
-            f"Name        : {booking['first_name']} {booking['surname']}\n"
-            f"Address     : {booking['address']}\n"
-            f"Age         : {booking['age']}\n"
-            f"Licence     : {booking['licence']}\n"
-            f"─────────────────────────────\n"
-            f"Car Type    : {booking['car_type']}\n"
-            f"Fuel Type   : {booking['fuel_type']}\n"
-            f"Days        : {booking['days']}\n"
-            f"Mileage     : {'Yes' if booking['mileage'] else 'No'}\n"
-            f"Breakdown   : {'Yes' if booking['breakdown'] else 'No'}\n"
-            f"─────────────────────────────\n"
-            f"Total Price : £{booking['total_price']:.2f}\n"
-            f"Status      : {booking['status']}\n"
-            f"Created     : {booking['created_at']}"
-        )
-        messagebox.showinfo(f"Booking {sel}", detail, parent=self)
-
-    def refresh(self):
-        """Public refresh called when frame is switched to."""
-        self._refresh_table()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  UPDATE BOOKING FRAME
-# ─────────────────────────────────────────────────────────────────────────────
-
-class UpdateBookingFrame(tk.Frame):
-    """
-    Allows staff to search for a booking by ID and edit its details.
-    """
-
-    def __init__(self, parent, controller):
-        super().__init__(parent, bg=C["bg_dark"])
-        self.controller = controller
-        self.current_booking = None
-        self._build_ui()
-
-    def _build_ui(self):
-        # Header
-        header = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=12)
-        header.pack(fill="x")
-        tk.Label(header, text="✏️  Update Booking",
-                 font=FONT_TITLE, fg=C["accent"],
-                 bg=C["bg_mid"]).pack(side="left")
-        make_button(header, "⬅  Dashboard",
-                    self.controller.show_dashboard,
-                    bg=C["bg_card"], fg=C["text_main"],
-                    width=14).pack(side="right")
-
-        # Search area
-        search_panel = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=16)
-        search_panel.pack(fill="x", padx=20, pady=12)
-
-        tk.Label(search_panel, text="Enter Booking ID to update:",
-                 font=FONT_SUBHEAD, fg=C["text_main"],
-                 bg=C["bg_mid"]).pack(anchor="w")
-
-        row = tk.Frame(search_panel, bg=C["bg_mid"])
-        row.pack(fill="x", pady=8)
-
-        self.search_id_var = tk.StringVar()
-        make_entry(row, textvariable=self.search_id_var, width=20).pack(side="left")
-        make_button(row, "🔍  Find",
-                    self._find_booking, width=10).pack(side="left", padx=8)
-
-        self.find_err = tk.Label(search_panel, text="",
-                                 font=FONT_SMALL, fg=C["danger"],
-                                 bg=C["bg_mid"])
-        self.find_err.pack(anchor="w")
-
-        # Editable fields (initially hidden)
-        self.edit_frame = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=16)
-
-        self.u_days_var   = tk.IntVar(value=1)
-        self.u_car_var    = tk.StringVar(value="City Car")
-        self.u_fuel_var   = tk.StringVar(value="Petrol")
-        self.u_mileage    = tk.BooleanVar(value=False)
-        self.u_breakdown  = tk.BooleanVar(value=False)
-        self.u_status_var = tk.StringVar(value="Active")
-
-        fields = [
-            ("Number of Days (1–28)", None, "spinbox"),
-            ("Car Type",   None, "option_car"),
-            ("Fuel Type",  None, "option_fuel"),
-            ("Status",     None, "option_status"),
+        # Treeview
+        tv_wrap = tk.Frame(self, bg=C["bg_dark"], padx=28)
+        tv_wrap.pack(fill="both", expand=True)
+        cols = ("id","name","age","car_type","fuel_type","days","extras","total","created")
+        self.tree = ttk.Treeview(tv_wrap, columns=cols, show="headings", selectmode="browse")
+        col_cfg = [
+            ("id", "ID", 55, "center"),
+            ("name", "Customer", 175, "w"),
+            ("age", "Age", 50, "center"),
+            ("car_type", "Car Type", 110, "center"),
+            ("fuel_type","Fuel", 90, "center"),
+            ("days", "Days", 55, "center"),
+            ("extras", "Extras", 155, "w"),
+            ("total", "Total", 100, "center"),
+            ("created", "Booked On", 130, "center"),
         ]
+        for col, hdg, w, anc in col_cfg:
+            self.tree.heading(col, text=hdg, command=lambda c=col: self._sort(c))
+            self.tree.column(col, width=w, anchor=anc, minwidth=40)
+        vsb = ttk.Scrollbar(tv_wrap, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(tv_wrap, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        tv_wrap.rowconfigure(0, weight=1)
+        tv_wrap.columnconfigure(0, weight=1)
 
-        tk.Label(self.edit_frame, text="Editable Fields:",
-                 font=FONT_SUBHEAD, fg=C["accent2"],
-                 bg=C["bg_mid"]).pack(anchor="w", pady=(0, 8))
+        # Action row
+        act = tk.Frame(self, bg=C["bg_dark"], padx=28, pady=14)
+        act.pack(fill="x")
+        tk.Button(act, text="✏️ Edit Selected", font=FONT_BODY, bg=C["bg_card"],
+                  fg=C["text_primary"], activebackground=C["highlight"], relief="flat",
+                  cursor="hand2", padx=14, pady=8, command=self._edit_selected).pack(side="left", padx=(0, 10))
+        tk.Button(act, text="🗑 Delete Selected", font=FONT_BODY, bg=C["danger"],
+                  fg=C["text_primary"], activebackground="#FF6B6B", relief="flat",
+                  cursor="hand2", padx=14, pady=8, command=self._delete_selected).pack(side="left")
+        tk.Label(act, text="Double-click a row to edit", font=FONT_SMALL,
+                 bg=C["bg_dark"], fg=C["text_muted"]).pack(side="right")
+        self.tree.bind("<Double-1>", lambda _: self._edit_selected())
 
-        # Days spinbox
-        r1 = tk.Frame(self.edit_frame, bg=C["bg_mid"])
-        r1.pack(fill="x", pady=4)
-        tk.Label(r1, text="Number of Days (1–28)",
-                 font=FONT_BODY, fg=C["text_main"],
-                 bg=C["bg_mid"], width=24, anchor="w").pack(side="left")
-        tk.Spinbox(r1, from_=1, to=28, textvariable=self.u_days_var,
-                   width=8, bg=C["entry_bg"], fg=C["text_main"],
-                   relief="flat", font=FONT_BODY).pack(side="left", padx=8)
-
-        # Car type dropdown
-        r2 = tk.Frame(self.edit_frame, bg=C["bg_mid"])
-        r2.pack(fill="x", pady=4)
-        tk.Label(r2, text="Car Type", font=FONT_BODY,
-                 fg=C["text_main"], bg=C["bg_mid"],
-                 width=24, anchor="w").pack(side="left")
-        m2 = tk.OptionMenu(r2, self.u_car_var, *CAR_PRICES.keys())
-        m2.config(bg=C["entry_bg"], fg=C["text_main"], relief="flat",
-                  font=FONT_BODY, width=18)
-        m2["menu"].config(bg=C["bg_card"], fg=C["text_main"], font=FONT_BODY)
-        m2.pack(side="left", padx=8)
-
-        # Fuel type dropdown
-        r3 = tk.Frame(self.edit_frame, bg=C["bg_mid"])
-        r3.pack(fill="x", pady=4)
-        tk.Label(r3, text="Fuel Type", font=FONT_BODY,
-                 fg=C["text_main"], bg=C["bg_mid"],
-                 width=24, anchor="w").pack(side="left")
-        m3 = tk.OptionMenu(r3, self.u_fuel_var, *FUEL_PRICES.keys())
-        m3.config(bg=C["entry_bg"], fg=C["text_main"], relief="flat",
-                  font=FONT_BODY, width=18)
-        m3["menu"].config(bg=C["bg_card"], fg=C["text_main"], font=FONT_BODY)
-        m3.pack(side="left", padx=8)
-
-        # Mileage / Breakdown checkboxes
-        r4 = tk.Frame(self.edit_frame, bg=C["bg_mid"])
-        r4.pack(fill="x", pady=4)
-        tk.Checkbutton(r4, text="Unlimited Mileage (+£10/day)",
-                       variable=self.u_mileage, bg=C["bg_mid"],
-                       fg=C["text_main"], selectcolor=C["entry_bg"],
-                       font=FONT_BODY).pack(side="left", padx=(0, 20))
-        tk.Checkbutton(r4, text="Breakdown Cover (+£2/day)",
-                       variable=self.u_breakdown, bg=C["bg_mid"],
-                       fg=C["text_main"], selectcolor=C["entry_bg"],
-                       font=FONT_BODY).pack(side="left")
-
-        # Status dropdown
-        r5 = tk.Frame(self.edit_frame, bg=C["bg_mid"])
-        r5.pack(fill="x", pady=4)
-        tk.Label(r5, text="Status", font=FONT_BODY,
-                 fg=C["text_main"], bg=C["bg_mid"],
-                 width=24, anchor="w").pack(side="left")
-        m5 = tk.OptionMenu(r5, self.u_status_var, "Active", "Completed", "Cancelled")
-        m5.config(bg=C["entry_bg"], fg=C["text_main"], relief="flat",
-                  font=FONT_BODY, width=18)
-        m5["menu"].config(bg=C["bg_card"], fg=C["text_main"], font=FONT_BODY)
-        m5.pack(side="left", padx=8)
-
-        # Save button
-        make_button(self.edit_frame, "💾  Save Changes",
-                    self._save_update, bg=C["success"],
-                    fg=C["white"], width=18).pack(pady=16)
-
-    def _find_booking(self):
-        """Find booking by ID and populate edit fields."""
-        bid = self.search_id_var.get().strip().upper()
-        booking = next((b for b in bookings if b["id"] == bid), None)
-
-        if not booking:
-            self.find_err.config(text=f"Booking ID '{bid}' not found.")
-            self.edit_frame.pack_forget()
-            self.current_booking = None
-            return
-
-        self.find_err.config(text="")
-        self.current_booking = booking
-
-        # Pre-fill editable fields with current values
-        self.u_days_var.set(booking["days"])
-        self.u_car_var.set(booking["car_type"])
-        self.u_fuel_var.set(booking["fuel_type"])
-        self.u_mileage.set(booking.get("mileage", False))
-        self.u_breakdown.set(booking.get("breakdown", False))
-        self.u_status_var.set(booking.get("status", "Active"))
-
-        self.edit_frame.pack(fill="x", padx=20, pady=4)
-
-    def _save_update(self):
-        """Recalculate price and save updated booking fields."""
-        if not self.current_booking:
-            return
-
-        days = int(self.u_days_var.get())
-        if not (1 <= days <= 28):
-            messagebox.showerror("Validation", "Days must be 1–28.", parent=self)
-            return
-
-        # Recalculate total
-        base  = days * BASE_RATE
-        car   = CAR_PRICES.get(self.u_car_var.get(), 0)
-        fuel  = FUEL_PRICES.get(self.u_fuel_var.get(), 0)
-        mil   = days * MILEAGE_RATE  if self.u_mileage.get() else 0
-        brk   = days * BREAKDOWN_RATE if self.u_breakdown.get() else 0
-        total = base + car + fuel + mil + brk
-
-        # Update the booking record in-place
-        self.current_booking.update({
-            "days":        days,
-            "car_type":    self.u_car_var.get(),
-            "fuel_type":   self.u_fuel_var.get(),
-            "mileage":     self.u_mileage.get(),
-            "breakdown":   self.u_breakdown.get(),
-            "status":      self.u_status_var.get(),
-            "total_price": total,
-        })
-
-        save_bookings(bookings)
-
-        messagebox.showinfo(
-            "Updated",
-            f"✅  Booking {self.current_booking['id']} updated.\n"
-            f"New total: £{total:.2f}",
-            parent=self
-        )
-        self.edit_frame.pack_forget()
-        self.search_id_var.set("")
-        self.current_booking = None
-        self.controller.show_dashboard()
+    def _sort(self, col: str):
+        if self._sort_col == col:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_col = col
+            self._sort_asc = True
+        self.refresh()
 
     def refresh(self):
-        """Reset frame state when navigated to."""
-        self.search_id_var.set("")
-        self.find_err.config(text="")
-        self.current_booking = None
-        self.edit_frame.pack_forget()
+        query = self.search_var.get().lower()
+        results = []
+        for b in self.store.bookings:
+            name = f"{b.get('first_name','')} {b.get('surname','')}".lower()
+            searchable = name + b.get("car_type","").lower() + b.get("fuel_type","").lower() + str(b.get("id",""))
+            if query in searchable:
+                results.append(b)
+        # Sort
+        def _key(b):
+            v = b.get(self._sort_col, "")
+            if self._sort_col in ("id","age","days"):
+                try:
+                    return int(v)
+                except (ValueError, TypeError):
+                    return 0
+            if self._sort_col == "total":
+                return b.get("total_cost", 0)
+            return str(v).lower()
+        results.sort(key=_key, reverse=not self._sort_asc)
 
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for i, b in enumerate(results):
+            name = f"{b.get('first_name','')} {b.get('surname','')}"
+            extras = []
+            if b.get("unlimited_mileage"):
+                extras.append("Mileage")
+            if b.get("breakdown_cover"):
+                extras.append("Breakdown")
+            ex_str = ", ".join(extras) if extras else "—"
+            tag = "alt" if i % 2 else ""
+            self.tree.insert("", "end", iid=str(b["id"]), tags=(tag,), values=(
+                b.get("id",""), name, b.get("age",""), b.get("car_type",""),
+                b.get("fuel_type",""), b.get("days",""), ex_str,
+                f"£{b.get('total_cost',0):.2f}", b.get("created_at","")
+            ))
+        self.tree.tag_configure("alt", background=C["row_alt"])
+        self.count_lbl.config(text=f"{len(results)} booking(s)")
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DELETE BOOKING FRAME
-# ─────────────────────────────────────────────────────────────────────────────
+    def _selected_id(self) -> Optional[int]:
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("No Selection", "Please select a booking first.", parent=self)
+            return None
+        return int(sel[0])
 
-class DeleteBookingFrame(tk.Frame):
-    """
-    Allows staff to search for and permanently delete a booking by ID.
-    Requires a confirmation dialog before deletion.
-    """
+    def _edit_selected(self):
+        bid = self._selected_id()
+        if bid is not None:
+            self.on_edit(bid)
 
-    def __init__(self, parent, controller):
-        super().__init__(parent, bg=C["bg_dark"])
-        self.controller = controller
-        self._build_ui()
-
-    def _build_ui(self):
-        # Header
-        header = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=12)
-        header.pack(fill="x")
-        tk.Label(header, text="🗑️  Delete Booking",
-                 font=FONT_TITLE, fg=C["danger"],
-                 bg=C["bg_mid"]).pack(side="left")
-        make_button(header, "⬅  Dashboard",
-                    self.controller.show_dashboard,
-                    bg=C["bg_card"], fg=C["text_main"],
-                    width=14).pack(side="right")
-
-        # Search panel
-        panel = tk.Frame(self, bg=C["bg_mid"], padx=20, pady=20)
-        panel.pack(fill="x", padx=20, pady=20)
-
-        tk.Label(panel, text="Enter Booking ID to delete:",
-                 font=FONT_SUBHEAD, fg=C["text_main"],
-                 bg=C["bg_mid"]).pack(anchor="w")
-
-        row = tk.Frame(panel, bg=C["bg_mid"])
-        row.pack(fill="x", pady=8)
-
-        self.del_id_var = tk.StringVar()
-        make_entry(row, textvariable=self.del_id_var, width=20).pack(side="left")
-        make_button(row, "🔍  Find",
-                    self._find_booking, width=10).pack(side="left", padx=8)
-
-        self.find_err = tk.Label(panel, text="",
-                                 font=FONT_SMALL, fg=C["danger"],
-                                 bg=C["bg_mid"])
-        self.find_err.pack(anchor="w")
-
-        # Detail preview (shown after finding)
-        self.preview_lbl = tk.Label(panel, text="",
-                                    font=FONT_MONO, fg=C["text_main"],
-                                    bg=C["bg_card"], justify="left",
-                                    padx=12, pady=12)
-        self.delete_btn = make_button(panel, "🗑️  Confirm Delete",
-                                      self._confirm_delete,
-                                      bg=C["danger"], fg=C["white"], width=20)
-
-        self.found_booking = None
-
-    def _find_booking(self):
-        """Find and preview a booking before deletion."""
-        bid = self.del_id_var.get().strip().upper()
-        booking = next((b for b in bookings if b["id"] == bid), None)
-
-        if not booking:
-            self.find_err.config(text=f"Booking ID '{bid}' not found.")
-            self.preview_lbl.pack_forget()
-            self.delete_btn.pack_forget()
-            self.found_booking = None
+    def _delete_selected(self):
+        bid = self._selected_id()
+        if bid is None:
             return
-
-        self.find_err.config(text="")
-        self.found_booking = booking
-
-        preview = (
-            f"  ID     : {booking['id']}\n"
-            f"  Name   : {booking['first_name']} {booking['surname']}\n"
-            f"  Car    : {booking['car_type']}  |  Fuel: {booking['fuel_type']}\n"
-            f"  Days   : {booking['days']}  |  Total: £{booking['total_price']:.2f}\n"
-            f"  Status : {booking.get('status','Active')}"
-        )
-        self.preview_lbl.config(text=preview)
-        self.preview_lbl.pack(fill="x", pady=(12, 6))
-        self.delete_btn.pack(pady=4)
-
-    def _confirm_delete(self):
-        """Ask for confirmation then delete the booking."""
-        if not self.found_booking:
-            return
-
-        bid  = self.found_booking["id"]
-        name = f"{self.found_booking['first_name']} {self.found_booking['surname']}"
-
-        ok = messagebox.askyesno(
-            "Confirm Deletion",
-            f"⚠️  Are you sure you want to permanently delete booking {bid}?\n\n"
-            f"Customer: {name}\nThis action cannot be undone.",
-            parent=self
-        )
-        if not ok:
-            return
-
-        bookings.remove(self.found_booking)
-        save_bookings(bookings)
-
-        messagebox.showinfo("Deleted",
-                            f"✅  Booking {bid} has been deleted.",
-                            parent=self)
-
-        # Reset UI
-        self.preview_lbl.pack_forget()
-        self.delete_btn.pack_forget()
-        self.del_id_var.set("")
-        self.found_booking = None
-        self.controller.show_dashboard()
-
-    def refresh(self):
-        """Reset state when navigated to."""
-        self.del_id_var.set("")
-        self.find_err.config(text="")
-        self.preview_lbl.pack_forget()
-        self.delete_btn.pack_forget()
-        self.found_booking = None
+        b = self.store.get_by_id(bid)
+        if b:
+            name = f"{b.get('first_name','')} {b.get('surname','')}"
+            if messagebox.askyesno("Confirm Delete", f"Delete booking #{bid} for {name}?\nThis cannot be undone.", parent=self):
+                self.store.delete(bid)
+                self.refresh()
+                self.on_delete()
+                messagebox.showinfo("Deleted", "Booking deleted.", parent=self)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN APPLICATION CONTROLLER
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────── SELECT-TO-EDIT DIALOG ───────────────────────────────
+class SelectBookingDialog(tk.Toplevel):
+    """Small dialog to choose a booking ID for update/delete."""
+    def __init__(self, parent, store: BookingStore, action_label: str, on_select):
+        super().__init__(parent)
+        self.store = store
+        self.on_select = on_select
+        self.title(f"Select Booking — {action_label}")
+        self.configure(bg=C["bg_card"])
+        self.resizable(False, False)
+        w, h = 540, 400
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        self.grab_set()
+        self._build(action_label)
 
-class WeAreCarsApp(tk.Tk):
-    """
-    Root application window.
-    Manages frame switching (login ↔ dashboard ↔ add/view/update/delete).
-    Uses a splash screen on startup.
-    """
+    def _build(self, action_label: str):
+        tk.Frame(self, bg=C["accent"], height=3).pack(fill="x")
+        hdr = tk.Frame(self, bg=C["bg_card"], padx=20, pady=14)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text=f"Choose a booking to {action_label.lower()}",
+                 font=FONT_SUBHEAD, bg=C["bg_card"], fg=C["text_primary"]).pack(anchor="w")
+        Separator(self).pack(fill="x")
+        tv_frame = tk.Frame(self, bg=C["bg_card"], padx=16, pady=10)
+        tv_frame.pack(fill="both", expand=True)
+        cols = ("id","name","car_type","days","total")
+        tree = ttk.Treeview(tv_frame, columns=cols, show="headings", height=10)
+        cfg = [("id","ID",55), ("name","Customer",180), ("car_type","Car",110),
+               ("days","Days",55), ("total","Total",100)]
+        for col, hdg, w in cfg:
+            tree.heading(col, text=hdg)
+            tree.column(col, width=w, anchor="center" if col != "name" else "w")
+        vsb = ttk.Scrollbar(tv_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="left", fill="y")
+        for b in sorted(self.store.bookings, key=lambda x: x.get("id", 0), reverse=True):
+            name = f"{b.get('first_name','')} {b.get('surname','')}"
+            tree.insert("", "end", iid=str(b["id"]), values=(
+                b.get("id",""), name, b.get("car_type",""), b.get("days",""),
+                f"£{b.get('total_cost',0):.2f}"
+            ))
+        btn_row = tk.Frame(self, bg=C["bg_card"], padx=16, pady=12)
+        btn_row.pack(fill="x")
+        def _confirm():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showwarning("No Selection", "Please select a booking.", parent=self)
+                return
+            bid = int(sel[0])
+            self.destroy()
+            self.on_select(bid)
+        tk.Button(btn_row, text=f" {action_label} ", font=FONT_SUBHEAD, bg=C["accent"],
+                  fg=C["bg_dark"], activebackground=C["accent_hover"], relief="flat",
+                  cursor="hand2", padx=14, pady=8, command=_confirm).pack(side="left", padx=(0, 10))
+        tk.Button(btn_row, text="Cancel", font=FONT_BODY, bg=C["bg_card"],
+                  fg=C["text_secondary"], activebackground=C["highlight"], relief="flat",
+                  cursor="hand2", padx=12, pady=8, command=self.destroy).pack(side="left")
+        tree.bind("<Double-1>", lambda _: _confirm())
 
+
+# ─────────────────────── MAIN APPLICATION ────────────────────────────────────
+class WeAreCarsApp:
+    """Root application controller — manages all screens."""
     def __init__(self):
-        super().__init__()
+        self.root = tk.Tk()
+        self.root.title(APP_TITLE)
+        self.root.geometry("1200x760")
+        self.root.minsize(1000, 650)
+        self.root.configure(bg=C["bg_dark"])
+        apply_dark_theme(self.root)
+        self.store = BookingStore()
+        self._current_frame: Optional[tk.Frame] = None
+        self._show_splash()
 
-        # Window setup
-        self.title("WeAreCars – Car Rental Management System")
-        self.geometry("1100x720")
-        self.minsize(900, 620)
-        self.configure(bg=C["bg_dark"])
+    def _clear(self):
+        if self._current_frame:
+            self._current_frame.destroy()
+            self._current_frame = None
 
-        # Try to set an icon (silently skip if unavailable)
-        try:
-            self.iconbitmap("wearecars.ico")
-        except Exception:
-            pass
+    def _show(self, frame: tk.Frame):
+        self._clear()
+        self._current_frame = frame
+        frame.pack(fill="both", expand=True)
 
-        # Hide main window until splash is done
-        self.withdraw()
+    def _show_splash(self):
+        self.root.withdraw()
+        splash = SplashScreen(self.root)
+        self.root.after(3000, lambda: self._after_splash(splash))
 
-        # Frame container
-        self.container = tk.Frame(self, bg=C["bg_dark"])
-        self.container.pack(fill="both", expand=True)
+    def _after_splash(self, splash: SplashScreen):
+        splash.destroy()
+        self.root.deiconify()
+        self._show_login()
 
-        # Instantiate all frames (lazy – only shown when needed)
-        self.frames = {}
-        self._init_frames()
+    def _show_login(self):
+        self._show(LoginScreen(self.root, on_success=self._show_dashboard))
 
-        # Show splash screen first (3 seconds)
-        SplashScreen(self, self._on_splash_done)
+    def _show_dashboard(self):
+        nav = {
+            "add": self._show_add,
+            "view": self._show_view_bookings,
+            "update": self._show_update_picker,
+            "delete": self._show_delete_picker,
+            "logout": self._logout,
+        }
+        dash = Dashboard(self.root, self.store, nav)
+        self._show(dash)
 
-    def _init_frames(self):
-        """Create all application frames and store in dict."""
-        self.frames["login"]   = LoginFrame(self.container,
-                                            on_login_success=self.show_dashboard)
-        self.frames["dashboard"] = DashboardFrame(self.container, self)
-        self.frames["add"]       = AddBookingFrame(self.container, self)
-        self.frames["view"]      = ViewBookingsFrame(self.container, self)
-        self.frames["update"]    = UpdateBookingFrame(self.container, self)
-        self.frames["delete"]    = DeleteBookingFrame(self.container, self)
+    def _show_add(self):
+        form = BookingForm(self.root, self.store, on_save=self._show_dashboard,
+                           on_cancel=self._show_dashboard)
+        self._show(form)
 
-        # Pack all frames in the container (only one visible at a time)
-        for frame in self.frames.values():
-            frame.place(relwidth=1, relheight=1)
+    def _show_view_bookings(self):
+        view = BookingsView(self.root, self.store, on_edit=self._edit_booking,
+                            on_delete=self._show_dashboard, on_back=self._show_dashboard)
+        self._show(view)
 
-    def _show_frame(self, name):
-        """Bring the named frame to the front."""
-        frame = self.frames[name]
-        frame.tkraise()
-        # Refresh data-driven frames when shown
-        if hasattr(frame, "refresh"):
-            frame.refresh()
+    def _show_update_picker(self):
+        if not self.store.bookings:
+            messagebox.showinfo("No Bookings", "There are no bookings to update.")
+            return
+        SelectBookingDialog(self.root, self.store, action_label="Edit Booking",
+                            on_select=self._edit_booking)
 
-    def _on_splash_done(self):
-        """Called when splash screen closes – show main window at login."""
-        self.deiconify()   # make main window visible
-        self._show_frame("login")
+    def _edit_booking(self, booking_id: int):
+        b = self.store.get_by_id(booking_id)
+        if not b:
+            messagebox.showerror("Not Found", f"Booking #{booking_id} was not found.")
+            return
+        form = BookingForm(self.root, self.store, on_save=self._show_dashboard,
+                           on_cancel=self._show_dashboard, existing=b)
+        self._show(form)
 
-    # ── Navigation methods (called by buttons) ────────────────────────────
+    def _show_delete_picker(self):
+        if not self.store.bookings:
+            messagebox.showinfo("No Bookings", "There are no bookings to delete.")
+            return
+        SelectBookingDialog(self.root, self.store, action_label="Delete Booking",
+                            on_select=self._confirm_delete)
 
-    def show_login(self):
-        """Navigate to login frame (also used for logout)."""
-        self._show_frame("login")
+    def _confirm_delete(self, booking_id: int):
+        b = self.store.get_by_id(booking_id)
+        if not b:
+            messagebox.showerror("Not Found", f"Booking #{booking_id} was not found.")
+            return
+        name = f"{b.get('first_name','')} {b.get('surname','')}"
+        if messagebox.askyesno("Confirm Delete", f"Permanently delete booking #{booking_id} for {name}?\nThis action cannot be undone."):
+            self.store.delete(booking_id)
+            messagebox.showinfo("Deleted", f"Booking #{booking_id} has been deleted.")
+            self._show_dashboard()
 
-    def show_dashboard(self):
-        """Navigate to the main dashboard."""
-        self._show_frame("dashboard")
+    def _logout(self):
+        if messagebox.askyesno("Log Out", "Are you sure you want to log out?"):
+            self._show_login()
 
-    def show_add_booking(self):
-        """Navigate to the Add Booking form."""
-        self._show_frame("add")
-
-    def show_view_bookings(self):
-        """Navigate to the View Bookings table."""
-        self._show_frame("view")
-
-    def show_update_booking(self):
-        """Navigate to the Update Booking form."""
-        self._show_frame("update")
-
-    def show_delete_booking(self):
-        """Navigate to the Delete Booking form."""
-        self._show_frame("delete")
+    def run(self):
+        self.root.mainloop()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ─────────────────────── ENTRY POINT ─────────────────────────────────────────
 if __name__ == "__main__":
     app = WeAreCarsApp()
-    app.mainloop()
+    app.run()
